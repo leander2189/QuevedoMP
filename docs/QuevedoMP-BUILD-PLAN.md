@@ -29,6 +29,23 @@
 
 ---
 
+## M. Mitigation amendments (ratified 2026-06-10)
+
+A feasibility review against the project's primary goal — **outperform MoveIt for motion
+planning in complex environments with high-polygon meshes, in quasi-static scenes** — found
+the architecture sound but the plan exposed on five points. These amendments are binding and
+override the original task text where they conflict:
+
+| # | Amendment | Why |
+|---|-----------|-----|
+| M1 | **Task 0.9 (OptiX validation) is MANDATORY** and part of the Phase 0 exit gate. The container sets `NVIDIA_DRIVER_CAPABILITIES=graphics,compute,utility` (default caps omit `libnvoptix.so.1`). | The whole performance bet rides on OptiX; WSL2 support is driver-dependent. Verified 2026-06-10 on this host: driver 576.57 exposes `libnvoptix.so.1` + `libnvoptix_loader.so.1` in `/usr/lib/wsl/lib` — the historical WSL blocker is absent here, but an in-container `optixHello` run is still required to close the gate. Fallback tree if it fails: (a) native Windows test outside Docker, (b) native-Linux/cloud GPU box for Phase 2b+, (c) Embree CPU ray backend becomes Plan A (same ray-cast semantics, no GPU). |
+| M2 | **Benchmark spine (Phase B) added**, runs alongside Phases 1–2: high-poly fixtures (≥1M triangles), a written benchmark protocol (`docs/benchmarks/PROTOCOL.md`), and a MoveIt 2 baseline container. Phase 2a/2b/3 exits are re-gated on it. | The headline goal was first measured at week ~19 against MotionBenchMaker scenes that are mostly low-poly primitives — the differentiator was never exercised. "5× FCL bulk throughput" is a weak proxy; small-batch latency is what an RRT actually sees. |
+| M3 | **Mesh-loading task added (Task 1.4b, assimp)** + `libassimp-dev` in the container. | `urdfdom` yields mesh *filenames* only; nothing in the original dependency set loads STL/DAE/OBJ. Fatal for a high-poly-mesh project. |
+| M4 | **OptiX backend re-specced for batching (Task 2b.1)**: static environment GAS, robot surface rays transformed in raygen, per-config transforms in one device buffer, config index in launch dims — **no per-config IAS update**. Self-collision on CPU. Containment + margin policy decided as ADRs (012/013) before coding. | The spec's per-config "write IAS transforms → refit → launch" loop puts an AS update + launch + PCIe round-trip inside RRT's serial edge loop — the classic GPU-planner failure mode. Quasi-static scenes make the static-GAS design ideal. |
+| M5 | **Phase 3 split**: 3a = planner + smoother + TOPP-RA + **MoveIt benchmark** (the goal gate); 3b = capture/replay/MCAP. Python bindings stay Phase 4 and are droppable from the performance milestone. | Capture/replay is good engineering but sat *between* us and the goal metric. |
+
+---
+
 ## H. Host setup (Windows 11 + WSL2 + NVIDIA GPU) — do this once before Phase 0
 
 You already have the NVIDIA driver and CUDA in Windows + WSL. To run **GPU-enabled
@@ -267,9 +284,23 @@ passthrough work end to end before we commit to deeper phases.
 - **Verify:** `clang-format --dry-run --Werror tests/unit/test_bootstrap.cpp` (exit 0).
 - **Done-when:** tracked sources are clean under the style.
 
-### Task 0.9 — (OPTIONAL) OptiX early validation — de-risk the biggest unknown now
-> Do this **only if** you want to prove OptiX works before Phase 2b. It needs a one-time
-> **manual** download (NVIDIA dev login) — it cannot go in an unattended `docker build`.
+### Task 0.9 — (MANDATORY — amendment M1) OptiX early validation
+> Was optional; **promoted to a Phase 0 exit gate** because the entire performance goal
+> (beat MoveIt on high-poly meshes) rides on OptiX, and OptiX-on-WSL2 is driver-dependent.
+> It needs a one-time **manual** download (NVIDIA dev login) — it cannot go in an
+> unattended `docker build`.
+>
+> **Host probe result (2026-06-10, driver 576.57):** `/usr/lib/wsl/lib` contains
+> `libnvoptix.so.1` + `libnvoptix_loader.so.1` — the historical "no OptiX in WSL" blocker
+> is absent on this host. The container side requires
+> `NVIDIA_DRIVER_CAPABILITIES=graphics,compute,utility` (now set in the Dockerfile;
+> the default `compute,utility` does NOT mount libnvoptix). Still required to close the
+> gate: an actual OptiX sample initializing in-container.
+>
+> **Fallback tree if the sample fails:** (a) test natively on Windows outside Docker to
+> isolate container vs driver; (b) move Phase 2b+ to a native-Linux or cloud GPU box;
+> (c) pivot: an **Embree CPU ray-cast backend** becomes Plan A — same ray-cast collision
+> semantics, no GPU/PCIe/WSL dependency, still expected to beat MoveIt on high-poly meshes.
 - Download `NVIDIA-OptiX-SDK-8.x.x-linux64-*.sh` from the NVIDIA developer portal into the
   repo-ignored path `/.devcontainer/optix/` (add to `.gitignore` — do **not** commit it).
 - Add an **optional** Dockerfile stage guarded by a build arg, e.g.
@@ -281,12 +312,72 @@ passthrough work end to end before we commit to deeper phases.
   *(If you skip this, OptiX is first set up in Phase 2b task 2b.0 instead.)*
 
 ### Phase 0 EXIT (DoD — checked manually)
-- [ ] Host setup §H done: `nvidia-smi` works in WSL; `docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi` lists the GPU.
+- [x] Host setup §H done: `nvidia-smi` works in WSL; GPU passthrough into containers works
+      (verified 2026-06-10: RTX 2000 Ada visible in-container via `--gpus all`).
 - [ ] `docker build -t quevedomp-cuda .devcontainer` exits 0; `nvidia-smi` works **inside** it.
-- [ ] `dev-gpu`: configure + build + `ctest` → `2 tests passed` (incl. `cuda_smoke OK: result=42`).
-- [ ] `dev-cpu`: configure + build + `ctest` → `1 test passed`, with **no nvcc** required.
-- [ ] No OptiX reference reachable unless Task 0.10 was deliberately enabled.
+      ⚠ **Blocked 2026-06-10 by host networking**, see §N below: WSL (mirrored mode) currently
+      has zero outbound TCP, so apt inside `docker build` cannot fetch. Verification was run
+      against the pre-existing image + a host-side CMake 3.31 mount instead. **Re-run the
+      build once §N is resolved** — the committed Dockerfile (Kitware cmake, assimp, driver
+      caps) is otherwise unverified.
+- [x] `dev-gpu`: configure + build + `ctest` → `2 tests passed` incl. `cuda_smoke OK: result=42`
+      (verified 2026-06-10 in-container on the real GPU; commit `e72a4b0`).
+- [x] `dev-cpu`: configure + build + `ctest` → `1 test passed`, with **no nvcc** required
+      (verified 2026-06-10).
+- [x] No OptiX reference reachable unless Task 0.9 was deliberately enabled.
+- [ ] **Task 0.9 (now mandatory, M1):** an OptiX SDK sample initializes in-container.
 - **Then update memory `phase_status.md` to Phase-0-complete with the commit SHA.**
+
+---
+
+## N. Host issue log (this machine)
+
+**WSL outbound network is dead under mirrored mode (found 2026-06-10).** Symptoms: DNS
+resolves (dnsTunneling=true) but **all** outbound TCP from WSL fails with
+`No route to host` — from the WSL shell itself, from Docker bridge networks, and from
+`--network=host` containers alike. Windows-side connectivity to the same endpoints is fine.
+`.wslconfig` has `networkingMode=Mirrored`, `firewall=false`, so the blocker is Windows-side
+packet filtering (endpoint security / Hyper-V layer) on mirrored WSL traffic, not the WSL
+firewall. Consequences: `docker build` cannot apt-fetch; image rebuilds are blocked.
+Options (user decision — changes global WSL behavior):
+1. Switch `networkingMode=NAT` in `%UserProfile%\.wslconfig` + `wsl --shutdown` (most likely
+   fix; mirrored mode is what breaks container/VM egress under many corporate EDRs).
+2. Keep mirrored and add a firewall/EDR exception for the WSL interface.
+3. Workaround used meanwhile: download artifacts Windows-side, mount into WSL/containers.
+
+---
+
+## Phase B — Benchmark spine (amendment M2 — runs alongside Phases 1–2)
+
+> **Purpose:** the project's headline goal — *outperform MoveIt in complex, high-poly-mesh,
+> quasi-static scenes* — must be a tracked metric from Phase 2a onward, not a hope measured
+> at week 19. These tasks have no code dependencies on Phases 1–2 and can interleave.
+
+### Task B.1 — High-poly benchmark fixtures
+- Acquire 2–3 environments with **≥ 1M triangles total** into `tests/fixtures/scenes/`:
+  e.g. a scanned/CAD industrial cell, dense shelving unit, and a cluttered tabletop with
+  high-res scanned objects (Thingi10K / YCB scans / BlenderKit CC0 are good sources).
+  Record license + provenance in `tests/fixtures/scenes/PROVENANCE.md`.
+- Include at least one **non-watertight** mesh (real scans have holes) — it exercises the
+  ADR-012 containment policy and ray robustness.
+- **Verify:** each loads via the Task 1.4b mesh loader; triangle counts recorded.
+- **Done-when:** fixtures committed (or LFS/scripted download), provenance recorded.
+
+### Task B.2 — Benchmark protocol (already drafted)
+- `docs/benchmarks/PROTOCOL.md` defines problems, metrics, and methodology. Keep it the
+  single source of truth for every performance claim; update it by PR like code.
+- **Done-when:** protocol committed and referenced by Phase 2a/2b/3 exit gates.
+
+### Task B.3 — MoveIt 2 baseline container
+- Separate `benchmarks/moveit-baseline/` Dockerfile (ROS 2 + MoveIt 2 binary install).
+  MoveIt is **never** a dependency of `quevedomp` — it lives only in this container.
+- Export the B.1 scenes + a UR5 problem set into MoveIt's scene format; script
+  `run_baseline.py` produces the PROTOCOL.md metrics (p50/p95 plan time, success rate).
+- **Verify:** baseline numbers reproduce across two runs within noise (< 10%).
+- **Done-when:** baseline metrics for all fixture scenes are recorded in
+  `tests/benchmarks/results/moveit-baseline.json` — the number to beat.
+- **Schedule:** must exist before the Phase 2a exit gate (FCL microbenchmark compares
+  against it).
 
 ---
 
@@ -320,6 +411,16 @@ passthrough work end to end before we commit to deeper phases.
 - Record provenance (source URL, license, any edits) in `tests/fixtures/robots/PROVENANCE.md`.
 - **Verify:** each loads via Task 1.3 without error; DOF count matches the datasheet.
 - **Done-when:** all 5 parse; provenance recorded.
+
+### Task 1.4b — Mesh loading (amendment M3)
+- `Mesh load_mesh(path)` via **assimp** (`libassimp-dev`, already in the container):
+  STL/DAE/OBJ → `core/types/Mesh` (vertices/indices, SoA-friendly). Handle units/scale
+  attributes (DAE meters-vs-mm is a classic silent bug) and degenerate-triangle cleanup.
+- Wire into URDF loading: `urdfdom` yields collision/visual mesh *filenames*; resolve them
+  relative to the URDF and load. Without this task no robot or scene mesh ever loads.
+- **Verify:** load each Task 1.4 robot's collision meshes + the Task B.1 scene fixtures;
+  assert vertex/triangle counts > 0 and bounding boxes are plausible (meters, not mm).
+- **Done-when:** all robot + scene fixtures load; a malformed file raises, not crashes.
 
 ### Task 1.5 — `kinematics/` FK
 - `fk(model, q, link)` and `fk_all(model, q)`.
@@ -373,7 +474,17 @@ passthrough work end to end before we commit to deeper phases.
 ### Task 2a.5 — Serializers (`RobotModel`/`RobotInstance`/`CollisionScene`)
 - Build now; reused by captures in Phase 3 (spec §5.3).
 - **Verify:** round-trip equality (serialize→deserialize→compare).
-- **Phase 2a EXIT:** full CPU pipeline buildable/testable on FCL; round-trips pass; coverage >80% in `collision/`. **No GPU.** Update memory.
+
+### Task 2a.6 — FCL-vs-MoveIt collision microbenchmark (amendment M2 gate)
+- Benchmark `query_batch` (boolean) on the Task B.1 high-poly fixtures at RRT-realistic
+  batch sizes (10/50/100 configs) per `docs/benchmarks/PROTOCOL.md`; compare against the
+  Task B.3 MoveIt baseline's collision-checking throughput.
+- **Done-when:** numbers recorded in `tests/benchmarks/results/`. Expectation (not a hard
+  gate): batch-first FCL without MoveIt's planning-scene overhead already meets or beats
+  MoveIt on dense meshes. If it doesn't, understand why **before** building the GPU backend
+  on top of the same architecture.
+
+- **Phase 2a EXIT:** full CPU pipeline buildable/testable on FCL; round-trips pass; coverage >80% in `collision/`; **2a.6 microbenchmark recorded**. **No GPU.** Update memory.
 
 ---
 
@@ -388,18 +499,41 @@ passthrough work end to end before we commit to deeper phases.
 - **Verify:** `find_package(OptiX)` succeeds under `dev-gpu`; an OptiX sample initializes on the GPU.
 - **Done-when:** `cmake --preset dev-gpu` configures with OptiX found and the library builds.
 
-### Task 2b.1 — OptiX backend (simple per-config launch first)
-- GAS/IAS build, per-config transform update + any-hit boolean (§4.5). **Simple iterate-configs impl first; measure before optimizing.**
-- **Verify:** unit-level — a single known collision/clear config matches FCL.
+### Task 2b.1 — OptiX backend (amendment M4 — batched-raygen design, NOT per-config IAS)
+> **Supersedes spec §4.5's "write IAS transforms → refit → launch per config" loop.** That
+> design puts an AS update + kernel launch + PCIe round-trip inside RRT's *serial* edge
+> loop — the classic GPU-planner failure mode. The replacement exploits exactly what the
+> quasi-static target gives us:
+- **Environment:** one static GAS over all environment meshes, built once at
+  `add_object` time; refit only on (rare) `move_object`. **Never touched per query.**
+- **Robot:** precompute per-link surface test rays (triangle edges + sample points) once at
+  scene build, stored SoA on device. Per `query_batch` call: upload **one** buffer of
+  per-config per-link FK transforms; raygen threads index `(config, link, ray)` via launch
+  dimensions, transform their ray on the fly, and trace against the environment GAS with
+  any-hit + early termination. **One launch per batch, zero AS updates.**
+- **Self-collision: on CPU** (FCL convex pairs honoring the ACM, inside the same
+  `query_batch` call). A 6-DOF arm has a handful of link pairs — µs-cheap — and this deletes
+  the 8-bit-visibility-mask / ACM-in-anyhit complexity entirely.
+- **Containment & margins:** per ADR-012 (parity-ray containment for watertight meshes,
+  documented limitation otherwise) and ADR-013 (padding via vertex-offset inflation at scene
+  build; `safety_margin` semantics FCL-only in v0). **Both ADRs ratified before coding.**
+- Workspace owns: CUDA stream, persistent device buffers (transforms/results, grown
+  geometrically), pinned host staging.
+- **Verify:** unit-level — known collision/clear configs match FCL; a containment case
+  (link fully inside a box) behaves per ADR-012.
 
-### Task 2b.2 — Differential harness (§4.6)
+### Task 2b.2 — Differential harness (§4.6) + latency profile
 - N=10k random scenes/configs; assert boolean agreement **outside ±1e-4 m band**; report ambiguous fraction + throughput ratio.
-- **Verify:** zero out-of-band disagreements; OptiX boolean throughput **≥ 5× FCL** (spec DoD). Wire as `ci-gpu` (self-hosted).
-- **Phase 2b EXIT:** spec §6 Phase 2b DoD; benchmarks tracked (alert >10% regression). Update memory.
+- **Verify:** zero out-of-band disagreements; OptiX boolean throughput **≥ 5× FCL** on the
+  high-poly fixtures (spec DoD) — **and** (M2) record the PROTOCOL.md small-batch latency
+  profile: time per `query_batch` at batch = 10/50/100 on the B.1 fixtures, vs FCL. The GPU
+  must win at realistic RRT batch sizes on high-poly scenes, not just at bulk 10k; if it
+  loses below batch≈50, that bounds where `BackendHint::Auto` flips backends.
+- **Phase 2b EXIT:** spec §6 Phase 2b DoD + small-batch latency recorded; benchmarks tracked (alert >10% regression). Update memory.
 
 ---
 
-## Phase 3 — RRT pipeline + capture
+## Phase 3a — RRT pipeline + the goal gate (amendment M5: capture moved to 3b)
 
 ### Task 3.1 — Planning types
 - `TaskLimits`, `Goal`/`JointGoal`/`PoseGoal`/`MultiGoal`, `Constraints`, `PlanningProblem`, `PlanningResult` (with `used_seed` always populated).
@@ -407,6 +541,11 @@ passthrough work end to end before we commit to deeper phases.
 
 ### Task 3.2 — `RrtConnectPlanner` (CPU, FCL collision)
 - `Planner` interface + RRT-Connect using `CollisionScene` batch edge checks; `make_planner(...)`.
+- **Design for the GPU's appetite (M4):** all collision goes through `check_edge` batches —
+  never per-config `query`. Coarse-resolution edge pass first, refine survivors, so batches
+  stay as fat as correctness allows. Keep the validation call sites few and explicit: a lazy
+  edge-validation variant (accumulate candidate edges, validate as one batch) is a planned
+  Phase-3a-exit experiment, not a rewrite.
 - **Verify:** finds a known 2D solution in < N nodes; cross-check vs OMPL RRT-Connect on the same problem.
 
 ### Task 3.3 — `ShortcutSmoother`
@@ -415,15 +554,28 @@ passthrough work end to end before we commit to deeper phases.
 
 ### Task 3.4 — `ToppRaParameterization`
 - Time-optimal under joint + TCP vel/acc.
+- Note: no apt package — this triggers the deferred vcpkg/FetchContent decision (deviation
+  D2's escape hatch). Candidates: `hungpham2511/toppra` (C++ port) via FetchContent, or
+  implement the core algorithm (well-documented). Raise as a §12 decision when reached.
 - **Verify:** velocity **and** acceleration respected at every waypoint (jerk **not** guaranteed — ADR-011).
 
-### Task 3.5 — Capture system + `quevedomp-replay`
+### Task 3.5 — Full-pipeline integration + **the goal benchmark**
+- **Verify:** MotionBenchMaker static subset **plus the B.1 high-poly fixture set**; rerun
+  overlay; full PROTOCOL.md run vs the B.3 MoveIt baseline.
+- **Phase 3a EXIT (the project's headline gate):**
+  - ≤ 50 ms mean UR5 plan (moderate scene); ≥ 95% free-space / ≥ 80% obstacle success.
+  - **p50 end-to-end plan time ≥ 5× faster than the MoveIt 2 baseline on the high-poly
+    fixture set, at equal or better success rate** (per PROTOCOL.md).
+  - **Scene-update budget (quasi-static story):** `move_object` + AS refit ≤ 100 ms on the
+    largest fixture.
+  - Update memory with the numbers, not just "done".
+
+## Phase 3b — Capture & replay (moved off the goal's critical path, M5)
+
+### Task 3.6 — Capture system + `quevedomp-replay`
 - `PlanningCapture`, auto-dump-on-exception, MCAP serialization (reuse 2a.5 serializers), basic replay CLI.
 - **Verify:** force an exception → capture written → `quevedomp-replay <bundle>` reloads and reproduces the failure class with a `PlanningTrace`.
-
-### Task 3.6 — Full-pipeline integration
-- **Verify:** MotionBenchMaker static subset; rerun overlay; benchmark vs MoveIt2 RRTConnect.
-- **Phase 3 EXIT:** ≤50 ms mean UR5 plan (moderate scene); ≥95% free-space / ≥80% obstacle success; best-effort capture/replay works. Update memory.
+- **Phase 3b EXIT:** best-effort capture/replay works (spec §5 DoD). Update memory.
 
 ---
 
