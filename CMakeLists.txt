@@ -20,6 +20,14 @@ option(QUEVEDOMP_WITH_PYTHON     "Build nanobind Python bindings (Phase 4)"  OFF
 option(QUEVEDOMP_BUILD_TESTS     "Build tests"                               ON)
 option(QUEVEDOMP_ENABLE_SANITIZERS "Enable ASan/UBSan in Debug builds"       OFF)
 
+# ---- Testing ------------------------------------------------------------------------------
+# enable_testing() must run BEFORE any add_subdirectory() that calls add_test(), or those
+# tests are silently dropped from the generated CTest files (cuda_smoke was lost this way:
+# the WITH_CUDA block below ran first and its add_test never registered).
+if(QUEVEDOMP_BUILD_TESTS)
+  enable_testing()
+endif()
+
 # ---- Sanitizers (Debug, CPU) -------------------------------------------------------------
 if(QUEVEDOMP_ENABLE_SANITIZERS AND CMAKE_BUILD_TYPE STREQUAL "Debug")
   add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
@@ -56,7 +64,6 @@ endif()
 
 # ---- Tests -------------------------------------------------------------------------------
 if(QUEVEDOMP_BUILD_TESTS)
-  enable_testing()
   # Module mode (CMake's bundled FindGTest) — robust against the apt-vs-vcpkg config-package
   # mismatch the earlier attempt hit.
   find_package(GTest REQUIRED)
