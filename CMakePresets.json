@@ -1,0 +1,60 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "dev-gpu",
+      "displayName": "Debug, CUDA ON (primary Phase 0 preset)",
+      "description": "CPU library + CUDA smoke test. Requires the CUDA container started with --gpus all.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/dev-gpu",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "QUEVEDOMP_WITH_CUDA": "ON",
+        "QUEVEDOMP_WITH_OPTIX": "OFF",
+        "QUEVEDOMP_ENABLE_SANITIZERS": "ON"
+      }
+    },
+    {
+      "name": "dev-cpu",
+      "displayName": "Debug, CUDA OFF (minimal build proof)",
+      "description": "No nvcc, no GPU. Proves the no-GPU path compiles and tests pass (spec 1.2).",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/dev-cpu",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "QUEVEDOMP_WITH_CUDA": "OFF",
+        "QUEVEDOMP_WITH_OPTIX": "OFF",
+        "QUEVEDOMP_ENABLE_SANITIZERS": "ON"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Release, CUDA ON (OptiX flips ON in Phase 2b)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "QUEVEDOMP_WITH_CUDA": "ON",
+        "QUEVEDOMP_WITH_OPTIX": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "dev-gpu", "configurePreset": "dev-gpu" },
+    { "name": "dev-cpu", "configurePreset": "dev-cpu" },
+    { "name": "release", "configurePreset": "release" }
+  ],
+  "testPresets": [
+    {
+      "name": "dev-gpu",
+      "configurePreset": "dev-gpu",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "dev-cpu",
+      "configurePreset": "dev-cpu",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}
