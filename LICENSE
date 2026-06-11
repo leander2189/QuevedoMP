@@ -1,0 +1,15 @@
+QuevedoMP — License (PLACEHOLDER)
+=================================
+
+The licensing model for QuevedoMP is NOT YET FINALIZED.
+
+The specification proposes a dual-license model (AGPL + commercial), following the
+Tesseract/Qt precedent, but the exact terms — including what "commercial" includes and the
+implications of any (L)GPL dependencies — are an open decision (see QuevedoMP-SPEC.md §12 and
+the build plan's deferred ADR on licensing).
+
+Until that decision is ratified and a real license text is committed here, treat this software
+as: All rights reserved, no license granted. Do not redistribute.
+
+TODO (before first public release): replace this file with the ratified license text and add
+an SPDX identifier to source headers.

@@ -1,0 +1,42 @@
+# Build trees
+build/
+build*/
+out/
+cmake-build-*/
+
+# CMake / compile artifacts
+CMakeCache.txt
+CMakeFiles/
+compile_commands.json
+*.o
+*.obj
+*.a
+*.so
+*.dll
+*.exe
+
+# CUDA
+*.ptx
+*.cubin
+*.fatbin
+
+# Editor / OS
+.cache/
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Local secrets / large downloads (e.g. OptiX installer — never commit)
+.devcontainer/optix/
+*.run
+NVIDIA-OptiX-SDK-*.sh
