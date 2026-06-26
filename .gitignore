@@ -37,6 +37,11 @@ __pycache__/
 venv/
 
 # Local secrets / large downloads (e.g. OptiX installer — never commit)
-.devcontainer/optix/
+.devcontainer/optix/*
+!.devcontainer/optix/.gitkeep
 *.run
 NVIDIA-OptiX-SDK-*.sh
+
+# OptiX-on-WSL runtime libs extracted from the NVIDIA Linux .run driver
+# (host-/driver-specific binaries — never commit). See docs/tutorials/testing.md.
+.devcontainer/wsl-optix/

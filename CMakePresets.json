@@ -29,6 +29,19 @@
       }
     },
     {
+      "name": "dev-optix",
+      "displayName": "Debug, CUDA + OptiX ON (Task 0.9 gate)",
+      "description": "Builds optix_smoke to validate libnvoptix + RT-core access. Requires OptiX SDK in the container (docker build --build-arg OPTIX_INSTALLER=...).",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/dev-optix",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "QUEVEDOMP_WITH_CUDA": "ON",
+        "QUEVEDOMP_WITH_OPTIX": "ON",
+        "QUEVEDOMP_ENABLE_SANITIZERS": "ON"
+      }
+    },
+    {
       "name": "release",
       "displayName": "Release, CUDA ON (OptiX flips ON in Phase 2b)",
       "generator": "Ninja",
@@ -41,9 +54,10 @@
     }
   ],
   "buildPresets": [
-    { "name": "dev-gpu", "configurePreset": "dev-gpu" },
-    { "name": "dev-cpu", "configurePreset": "dev-cpu" },
-    { "name": "release", "configurePreset": "release" }
+    { "name": "dev-gpu",   "configurePreset": "dev-gpu" },
+    { "name": "dev-cpu",   "configurePreset": "dev-cpu" },
+    { "name": "dev-optix", "configurePreset": "dev-optix" },
+    { "name": "release",   "configurePreset": "release" }
   ],
   "testPresets": [
     {
@@ -54,6 +68,11 @@
     {
       "name": "dev-cpu",
       "configurePreset": "dev-cpu",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "dev-optix",
+      "configurePreset": "dev-optix",
       "output": { "outputOnFailure": true }
     }
   ]

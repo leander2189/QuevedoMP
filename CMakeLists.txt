@@ -57,9 +57,14 @@ if(QUEVEDOMP_WITH_CUDA)
   add_subdirectory(tools/cuda_smoke)
 endif()
 
-# ---- OptiX (Phase 2b) --------------------------------------------------------------------
+# ---- OptiX (Task 0.9 smoke test + Phase 2b backend) ------------------------------------
 if(QUEVEDOMP_WITH_OPTIX)
-  message(FATAL_ERROR "QUEVEDOMP_WITH_OPTIX is not implemented until Phase 2b.")
+  if(NOT QUEVEDOMP_WITH_CUDA)
+    message(FATAL_ERROR "QUEVEDOMP_WITH_OPTIX=ON requires QUEVEDOMP_WITH_CUDA=ON.")
+  endif()
+  list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+  find_package(OptiX REQUIRED)
+  add_subdirectory(tools/optix_smoke)
 endif()
 
 # ---- Tests -------------------------------------------------------------------------------
