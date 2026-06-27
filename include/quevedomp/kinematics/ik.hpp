@@ -1,0 +1,49 @@
+// kinematics/ik — inverse kinematics interface + numerical (DLS) solver (Task 1.7, spec §6).
+#pragma once
+
+#include <cstdint>
+#include <memory>
+#include <string>
+
+#include "quevedomp/core/types.hpp"
+#include "quevedomp/robot/robot_model.hpp"
+
+namespace quevedomp {
+
+struct IkOptions {
+  double pos_tol = 1e-4;           // success: position error below this (metres)
+  double rot_tol = 1e-3;           // success: rotation error below this (radians)
+  int max_iters = 200;             // damped-least-squares iterations per attempt
+  int max_restarts = 50;           // random re-seeds if an attempt stalls
+  int stall_iters = 20;            // re-seed after this many no-progress iterations
+  double stall_eps = 1e-7;         // minimum error decrease that counts as progress
+  double damping = 1e-2;           // damped-least-squares λ
+  double max_step = 0.5;           // clamp ‖Δq‖ per iteration (rad/m) for stability
+  std::uint64_t seed = 0xA11CEULL; // RNG seed for restart configurations (deterministic)
+};
+
+struct IkResult {
+  bool success = false;
+  JointPosition q;        // solution (size model.dof()); best-effort config if !success
+  int iterations = 0;     // total DLS iterations across attempts
+  int restarts = 0;       // attempts beyond the first
+  double pos_error = 0.0; // final position error (m)
+  double rot_error = 0.0; // final rotation error (rad)
+};
+
+class InverseKinematics {
+public:
+  virtual ~InverseKinematics() = default;
+
+  // Solve for a configuration placing `link` at `target` (base frame). If `seed` has size
+  // model.dof() it is the first attempt's initial guess; otherwise the first attempt starts
+  // from a random config. Further attempts re-seed randomly (multi-seed restart).
+  virtual IkResult solve(const std::string &link, const Transform &target,
+                         const JointPosition &seed = JointPosition()) const = 0;
+};
+
+// Damped-least-squares numerical IK with multi-seed restart, using fk()/jacobian().
+std::unique_ptr<InverseKinematics> make_numerical_ik(std::shared_ptr<const RobotModel> model,
+                                                     IkOptions options = {});
+
+} // namespace quevedomp

@@ -52,6 +52,7 @@ add_library(quevedomp
   src/robot/mesh_resolver.cpp
   src/kinematics/fk.cpp
   src/kinematics/jacobian.cpp
+  src/kinematics/ik.cpp
 )
 add_library(quevedomp::quevedomp ALIAS quevedomp)
 target_include_directories(quevedomp PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

@@ -52,3 +52,9 @@ target_link_libraries(test_jacobian PRIVATE quevedomp::quevedomp GTest::gtest_ma
 target_compile_definitions(test_jacobian
   PRIVATE QUEVEDOMP_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
 gtest_discover_tests(test_jacobian)
+
+add_executable(test_ik unit/test_ik.cpp)
+target_link_libraries(test_ik PRIVATE quevedomp::quevedomp GTest::gtest_main)
+target_compile_definitions(test_ik
+  PRIVATE QUEVEDOMP_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
+gtest_discover_tests(test_ik)
