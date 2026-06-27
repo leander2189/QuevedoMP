@@ -42,6 +42,7 @@ find_package(Eigen3 CONFIG REQUIRED)
 
 add_library(quevedomp
   src/core/types.cpp
+  src/core/rng.cpp
 )
 add_library(quevedomp::quevedomp ALIAS quevedomp)
 target_include_directories(quevedomp PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -79,5 +80,6 @@ if(QUEVEDOMP_BUILD_TESTS)
   # Module mode (CMake's bundled FindGTest) — robust against the apt-vs-vcpkg config-package
   # mismatch the earlier attempt hit.
   find_package(GTest REQUIRED)
+  find_package(Threads REQUIRED)  # test_rng exercises spawn() across threads
   add_subdirectory(tests)
 endif()
