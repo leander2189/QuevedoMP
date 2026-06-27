@@ -58,64 +58,77 @@ docker build \
   .devcontainer
 ```
 
-## 3. (WSL2 only) Provide the OptiX **runtime** libraries
+## 3. Provide the OptiX **runtime** library
 
-The SDK above is only headers. The OptiX *runtime* normally ships in the NVIDIA driver as
-`libnvoptix.so.1` (which exports `optixQueryFunctionTable`). On **WSL2 this is broken**: the
-Windows driver exposes only a tiny dxcore *loader* stub at `/usr/lib/wsl/lib/libnvoptix.so.1`
-that does **not** export that symbol, so OptiX fails with `OPTIX_ERROR_LIBRARY_NOT_FOUND`
-(Docker doesn't even mount the stub) and then `OPTIX_ERROR_ENTRY_SYMBOL_NOT_FOUND`. This
-affects native WSL too — it is **not** a `NVIDIA_DRIVER_CAPABILITIES` issue.
+The SDK above is only headers. At runtime the OptiX SDK `dlopen()`s `libnvoptix.so.1` and
+looks up `optixQueryFunctionTable` in it — that library is part of the NVIDIA **driver**, not
+the SDK. How it is provided is the **only** thing that differs between native Linux and WSL2.
 
-Fix: take the real `libnvoptix.so.1` (+ `rtcore`/`gpucomp`/`ptxjit`) out of the NVIDIA
-**Linux** `.run` driver and load them ahead of the stub. No changes to `C:\Windows\System32`.
+### Native Linux (the deployment target) — nothing to do
+
+A normal NVIDIA Linux driver installs `libnvoptix.so.1` (exporting `optixQueryFunctionTable`)
+in the system library path. With `--gpus all` and `NVIDIA_DRIVER_CAPABILITIES=graphics,...`
+(already set in the [Dockerfile](../../.devcontainer/Dockerfile)), the NVIDIA Container
+Toolkit mounts it into the container automatically. Skip straight to step 4 → *Native Linux*.
+
+### WSL2 (dev environment) — extract the runtime from the Linux `.run` driver
+
+Under WSL2 this is broken: the Windows driver exposes only a 10 KB dxcore *loader* stub at
+`/usr/lib/wsl/lib/libnvoptix.so.1` that does **not** export `optixQueryFunctionTable`, so
+OptiX fails with `OPTIX_ERROR_LIBRARY_NOT_FOUND` (Docker doesn't even mount the stub) and then
+`OPTIX_ERROR_ENTRY_SYMBOL_NOT_FOUND`. This also fails in native WSL — it is **not** a
+`NVIDIA_DRIVER_CAPABILITIES` issue. The real `libnvoptix.so.1` (+ `rtcore`/`gpucomp`/`ptxjit`)
+lives only inside the NVIDIA **Linux** `.run` driver; we extract it and load it ahead of the
+stub. No changes to `C:\Windows\System32`.
+
+A helper script does the download + extract + assemble (into the gitignored
+`.devcontainer/wsl-optix/`). These NVIDIA libraries are proprietary and driver-specific, so
+they are **not** committed — re-run the script on a new machine or after a major driver bump:
 
 ```bash
-# a) Match your driver. nvidia-smi shows the Windows version; pick the closest Linux
-#    production-branch .run from https://www.nvidia.com/en-us/drivers/unix/ (same major
-#    series). Example here: host driver 595.97 -> Linux 595.84.
-nvidia-smi   # note "Driver Version"
-
-# b) Download + extract the Linux driver (in WSL, native fs is fastest):
-cd ~ && mkdir -p optixsetup && cd optixsetup
-curl -L --fail -o nv.run \
-  https://us.download.nvidia.com/XFree86/Linux-x86_64/595.84/NVIDIA-Linux-x86_64-595.84.run
-bash nv.run -x --target driver
-
-# c) Assemble the runtime libs into the gitignored repo folder, with loader-resolvable names
-#    (libnvoptix/ptxjit use SONAME .so.1; rtcore/gpucomp keep their versioned SONAME):
-dest=/mnt/d/Inventos/quevedoMP/.devcontainer/wsl-optix
-mkdir -p "$dest"
-cp driver/libnvoptix.so.*            "$dest"/libnvoptix.so.1
-cp driver/libnvidia-ptxjitcompiler.so.* "$dest"/libnvidia-ptxjitcompiler.so.1
-cp driver/libnvidia-rtcore.so.*      "$dest"/
-cp driver/libnvidia-gpucomp.so.*     "$dest"/
-cp driver/nvoptix.bin                "$dest"/
-
-# Sanity: the real lib must export the entry symbol the stub lacks:
-readelf --dyn-syms -W "$dest"/libnvoptix.so.1 | grep -c optixQueryFunctionTable   # -> 1
+# Pick the version whose MAJOR matches your host driver (run nvidia-smi -> "Driver Version").
+# Default is 595.84 (Linux production branch); list at https://www.nvidia.com/en-us/drivers/unix/
+.devcontainer/setup-wsl-optix.sh            # or: .devcontainer/setup-wsl-optix.sh <version>
 ```
 
 ## 4. Build + run the optix_smoke test
 
+**Native Linux** (deployment target — no runtime-lib mount needed):
+
 ```bash
-docker run --rm --gpus all \
-  -v "$(pwd):/workspace" -w /workspace \
-  -v "$(pwd)/.devcontainer/wsl-optix:/opt/wsl-optix:ro" \
-  quevedomp-cuda bash -lc "
-    export LD_LIBRARY_PATH=/opt/wsl-optix:/usr/lib/wsl/lib:\$LD_LIBRARY_PATH
-    cmake --preset dev-optix && \
-    cmake --build --preset dev-optix && \
-    ctest --preset dev-optix --output-on-failure
-  "
+docker run --rm --gpus all -v "$(pwd):/workspace" -w /workspace quevedomp-cuda bash -lc "
+  cmake --preset dev-optix && \
+  cmake --build --preset dev-optix && \
+  ctest --preset dev-optix --output-on-failure
+"
 ```
 
-Expected output: `optix_smoke OK: OptiX initialized, device context created` — that closes
-the Phase 0 gate. (The `-v .../wsl-optix` mount + `LD_LIBRARY_PATH` prefix are required on
-WSL2; on native Linux with a normal driver they are unnecessary.)
+**WSL2** (adds the extracted runtime libs ahead of the stub):
+
+```bash
+docker run --rm --gpus all -v "$(pwd):/workspace" -w /workspace \
+  -v "$(pwd)/.devcontainer/wsl-optix:/opt/wsl-optix:ro" quevedomp-cuda bash -lc "
+  export LD_LIBRARY_PATH=/opt/wsl-optix:/usr/lib/wsl/lib:\$LD_LIBRARY_PATH && \
+  cmake --preset dev-optix && \
+  cmake --build --preset dev-optix && \
+  ctest --preset dev-optix --output-on-failure
+"
+```
+
+Both expected output: `optix_smoke OK: OptiX initialized, device context created` — that
+closes the Phase 0 gate.
+
+### Native Linux vs WSL2 — what's portable
+
+Everything in the pipeline is identical on both — the OptiX SDK, the Docker image, the CMake
+`dev-optix` preset, the build, and the `optix_smoke` source. **The only WSL2-specific pieces
+are the two `docker run` additions above** (`-v .../wsl-optix:/opt/wsl-optix:ro` and the
+`LD_LIBRARY_PATH` prefix) plus the `setup-wsl-optix.sh` step that produces them. On native
+Linux, drop both and the runtime comes from the host driver. Nothing in the repo's build
+system, code, or container is coupled to WSL.
 
 > Note: a Windows NVIDIA driver update overwrites the WSL `libnvoptix.so.1` stub again but
-> **not** your `.devcontainer/wsl-optix/` copy. If the driver major version changes, re-extract
-> a matching `.run` so the runtime libs stay ABI-compatible with the WSL kernel driver.
+> **not** your `.devcontainer/wsl-optix/` copy. If the driver major version changes, re-run
+> `setup-wsl-optix.sh <new-version>` so the runtime libs stay ABI-compatible with the kernel.
 
 Once it passes, commit everything and mark Phase 0 complete.

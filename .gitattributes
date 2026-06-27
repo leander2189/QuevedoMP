@@ -1,0 +1,27 @@
+# Normalize line endings. The repo is developed on Windows/WSL2 but deploys on native
+# Linux, so anything executed by a shell MUST stay LF even when checked out on Windows
+# (a CRLF in `#!/usr/bin/env bash` breaks the script under WSL/Linux).
+* text=auto
+
+# Always LF (Linux/Docker/shell-consumed), regardless of host:
+*.sh        text eol=lf
+*.bash      text eol=lf
+Dockerfile  text eol=lf
+*.cmake     text eol=lf
+CMakeLists.txt text eol=lf
+*.cpp       text eol=lf
+*.hpp       text eol=lf
+*.h         text eol=lf
+*.cu        text eol=lf
+*.cuh       text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.json      text eol=lf
+*.md        text eol=lf
+
+# Treat extracted OptiX runtime blobs as binary if ever present (defensive; they're
+# gitignored). Prevents any EOL/encoding mangling like the original installer corruption.
+*.so        binary
+*.so.*      binary
+*.bin       binary
+*.run       binary
