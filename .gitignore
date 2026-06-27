@@ -10,6 +10,8 @@ CMakeFiles/
 compile_commands.json
 *.o
 *.obj
+# ...but Wavefront .obj mesh fixtures are source assets, not compiled objects:
+!tests/fixtures/**/*.obj
 *.a
 *.so
 *.dll

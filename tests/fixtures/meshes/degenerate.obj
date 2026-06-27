@@ -1,0 +1,7 @@
+# One valid triangle plus one degenerate face (repeated vertex index). load_mesh must drop the
+# degenerate and keep exactly one triangle.
+v 0 0 0
+v 1 0 0
+v 0 1 0
+f 1 2 3
+f 1 1 2

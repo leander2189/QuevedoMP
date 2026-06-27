@@ -1,0 +1,1 @@
+# Valid OBJ syntax but no geometry — load_mesh must raise, not crash.
