@@ -50,6 +50,7 @@ add_library(quevedomp
   src/core/mesh_io.cpp
   src/robot/robot_model.cpp
   src/robot/mesh_resolver.cpp
+  src/kinematics/fk.cpp
 )
 add_library(quevedomp::quevedomp ALIAS quevedomp)
 target_include_directories(quevedomp PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

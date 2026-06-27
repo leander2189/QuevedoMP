@@ -40,6 +40,9 @@ struct Joint {
   Eigen::Vector3d axis = Eigen::Vector3d::UnitZ(); // unit axis in the joint frame
   Transform origin;                                // parent-link frame → joint frame
   JointLimits limits;
+  // Index of this joint's value in a configuration vector q (size == RobotModel::dof()).
+  // Assigned in joints() order over movable joints; -1 for fixed joints.
+  int dof_index = -1;
 
   bool is_movable() const noexcept { return type != JointType::Fixed; }
 };

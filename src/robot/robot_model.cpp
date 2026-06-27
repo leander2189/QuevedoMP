@@ -103,6 +103,15 @@ std::shared_ptr<const RobotModel> RobotModel::from_urdf(const std::string &urdf_
     out->joints_.push_back(std::move(j));
   }
 
+  // Assign configuration-vector indices to movable joints (in joints() order).
+  {
+    int dof = 0;
+    for (Joint &j : out->joints_) {
+      if (j.is_movable())
+        j.dof_index = dof++;
+    }
+  }
+
   // Wire link adjacency (parent_joint / child_joints) from the parsed joints.
   for (int jidx = 0; jidx < static_cast<int>(out->joints_.size()); ++jidx) {
     const Joint &j = out->joints_[jidx];
