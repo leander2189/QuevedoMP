@@ -34,12 +34,19 @@ if(QUEVEDOMP_ENABLE_SANITIZERS AND CMAKE_BUILD_TYPE STREQUAL "Debug")
   add_link_options(-fsanitize=address,undefined)
 endif()
 
-# ---- The library (placeholder until Phase 1) ---------------------------------------------
-# INTERFACE keeps Phase 0 source-free; becomes a real CPU static library in Phase 1.
-add_library(quevedomp INTERFACE)
+# ---- The library -------------------------------------------------------------------------
+# Real CPU static library as of Phase 1 (Task 1.1). Stays CPU-only and Eigen-only at the core;
+# the GPU backend is a separate target added in Phase 2b. Eigen is header-only but we link the
+# imported target so consumers inherit its include path transitively.
+find_package(Eigen3 CONFIG REQUIRED)
+
+add_library(quevedomp
+  src/core/types.cpp
+)
 add_library(quevedomp::quevedomp ALIAS quevedomp)
-target_include_directories(quevedomp INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_compile_features(quevedomp INTERFACE cxx_std_20)
+target_include_directories(quevedomp PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_features(quevedomp PUBLIC cxx_std_20)
+target_link_libraries(quevedomp PUBLIC Eigen3::Eigen)
 
 # ---- Optional CUDA toolchain validation --------------------------------------------------
 # The library stays CPU-only; this only builds a throwaway smoke test that proves nvcc + the
