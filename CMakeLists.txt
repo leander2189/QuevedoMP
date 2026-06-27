@@ -35,19 +35,25 @@ if(QUEVEDOMP_ENABLE_SANITIZERS AND CMAKE_BUILD_TYPE STREQUAL "Debug")
 endif()
 
 # ---- The library -------------------------------------------------------------------------
-# Real CPU static library as of Phase 1 (Task 1.1). Stays CPU-only and Eigen-only at the core;
-# the GPU backend is a separate target added in Phase 2b. Eigen is header-only but we link the
-# imported target so consumers inherit its include path transitively.
+# Real CPU static library as of Phase 1. Stays CPU-only at the core; the GPU backend is a
+# separate target added in Phase 2b. Eigen is a PUBLIC dep (appears in headers); urdfdom and
+# yaml-cpp are PRIVATE implementation details of URDF parsing (Task 1.3) and are not leaked
+# through the public headers.
 find_package(Eigen3 CONFIG REQUIRED)
+find_package(urdfdom REQUIRED)   # URDF parsing (Task 1.3)
+find_package(yaml-cpp REQUIRED)  # optional accel/jerk limit extension
 
 add_library(quevedomp
   src/core/types.cpp
   src/core/rng.cpp
+  src/robot/robot_model.cpp
 )
 add_library(quevedomp::quevedomp ALIAS quevedomp)
 target_include_directories(quevedomp PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(quevedomp PRIVATE ${urdfdom_INCLUDE_DIRS})
 target_compile_features(quevedomp PUBLIC cxx_std_20)
 target_link_libraries(quevedomp PUBLIC Eigen3::Eigen)
+target_link_libraries(quevedomp PRIVATE ${urdfdom_LIBRARIES} yaml-cpp)
 
 # ---- Optional CUDA toolchain validation --------------------------------------------------
 # The library stays CPU-only; this only builds a throwaway smoke test that proves nvcc + the

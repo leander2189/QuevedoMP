@@ -44,6 +44,14 @@ docker run --rm -v "$PWD":/work -w /work quevedomp-cuda bash -lc \
 
 VS Code users: "Reopen in Container" uses `.devcontainer/` directly.
 
+## Dependencies
+
+CPU deps come from the container's system `apt` (build-plan deviation D2), found via CMake:
+Eigen3 (core math, public), GoogleTest (tests). **URDF parsing uses `urdfdom`** (chosen over
+hand-rolled tinyxml2 — it is purpose-built, already packaged, and yields the full joint/link
+model); `yaml-cpp` carries the optional acceleration/jerk limit extension. urdfdom and yaml-cpp
+are private to the library — they do not appear in any public header.
+
 ## Layout
 
 See [`QuevedoMP-SPEC.md`](QuevedoMP-SPEC.md) §1.1. Library code lands from Phase 1 onward.

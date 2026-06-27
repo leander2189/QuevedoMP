@@ -1,0 +1,9 @@
+# Optional acceleration/jerk limits for two_link.urdf (Task 1.3 yaml extension).
+# Standard URDF carries no accel/jerk; these are merged in by RobotModel::from_urdf.
+joint_limits:
+  joint1:
+    max_acceleration: 10.0
+    max_jerk: 100.0
+  joint2:
+    max_acceleration: 8.0
+    max_jerk: 80.0
