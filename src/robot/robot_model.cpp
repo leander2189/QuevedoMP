@@ -1,5 +1,6 @@
 #include "quevedomp/robot/robot_model.hpp"
 
+#include <memory>
 #include <stdexcept>
 #include <utility>
 
@@ -111,6 +112,49 @@ std::shared_ptr<const RobotModel> RobotModel::from_urdf(const std::string &urdf_
       out->links_[pit->second].child_joints.push_back(jidx);
     if (cit != out->link_index_.end())
       out->links_[cit->second].parent_joint = jidx;
+  }
+
+  // Collision geometry per link (mesh URIs are resolved later via resolve_mesh_uri + load_mesh).
+  for (const auto &kv : model->links_) {
+    const urdf::LinkSharedPtr &ul = kv.second;
+    Link &link = out->links_[out->link_index_.at(ul->name)];
+    for (const urdf::CollisionSharedPtr &col : ul->collision_array) {
+      if (!col || !col->geometry)
+        continue;
+      CollisionGeometry cg;
+      cg.origin = to_transform(col->origin);
+      switch (col->geometry->type) {
+      case urdf::Geometry::MESH: {
+        const auto mesh = std::dynamic_pointer_cast<urdf::Mesh>(col->geometry);
+        cg.type = GeometryType::Mesh;
+        cg.mesh_filename = mesh->filename;
+        cg.mesh_scale = Eigen::Vector3d(mesh->scale.x, mesh->scale.y, mesh->scale.z);
+        break;
+      }
+      case urdf::Geometry::BOX: {
+        const auto box = std::dynamic_pointer_cast<urdf::Box>(col->geometry);
+        cg.type = GeometryType::Box;
+        cg.box_half_extents = Eigen::Vector3d(box->dim.x, box->dim.y, box->dim.z) * 0.5;
+        break;
+      }
+      case urdf::Geometry::SPHERE: {
+        const auto sph = std::dynamic_pointer_cast<urdf::Sphere>(col->geometry);
+        cg.type = GeometryType::Sphere;
+        cg.sphere_radius = sph->radius;
+        break;
+      }
+      case urdf::Geometry::CYLINDER: {
+        const auto cyl = std::dynamic_pointer_cast<urdf::Cylinder>(col->geometry);
+        cg.type = GeometryType::Cylinder;
+        cg.cylinder_radius = cyl->radius;
+        cg.cylinder_length = cyl->length;
+        break;
+      }
+      default:
+        continue; // unknown geometry kind — skip
+      }
+      link.collisions.push_back(std::move(cg));
+    }
   }
 
   if (yaml_extension)

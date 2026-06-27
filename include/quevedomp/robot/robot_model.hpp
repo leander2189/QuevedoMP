@@ -44,10 +44,29 @@ struct Joint {
   bool is_movable() const noexcept { return type != JointType::Fixed; }
 };
 
+enum class GeometryType { Mesh, Box, Sphere, Cylinder };
+
+// One collision shape attached to a link. Mesh filenames are kept as the raw URDF URI
+// (e.g. "package://pkg/.../foo.stl"); resolve them with resolve_mesh_uri() + load_mesh()
+// (Task 1.4b). Primitive dimensions are filled for Box/Sphere/Cylinder.
+struct CollisionGeometry {
+  GeometryType type = GeometryType::Mesh;
+  Transform origin; // link frame → geometry frame
+
+  std::string mesh_filename;                            // URDF URI; empty for primitives
+  Eigen::Vector3d mesh_scale = Eigen::Vector3d::Ones(); // URDF <mesh scale="...">
+
+  Eigen::Vector3d box_half_extents = Eigen::Vector3d::Zero(); // Box
+  double sphere_radius = 0.0;                                 // Sphere
+  double cylinder_radius = 0.0;                               // Cylinder
+  double cylinder_length = 0.0;                               // Cylinder
+};
+
 struct Link {
   std::string name;
   int parent_joint = -1;         // index into RobotModel::joints(); -1 at the root link
   std::vector<int> child_joints; // indices into RobotModel::joints()
+  std::vector<CollisionGeometry> collisions;
 };
 
 // An ordered serial chain, base → tip, as joint indices into RobotModel::joints(). Includes

@@ -1,9 +1,11 @@
 # Robot fixture provenance & licenses
 
-URDFs used by the test suite (Task 1.4). **Only the `.urdf` files are vendored** — mesh assets
-referenced via `package://`/relative paths are intentionally not included (URDF *parsing* needs
-no meshes; mesh loading is Task 1.4b, which resolves geometry separately). Files are used
-**verbatim** as downloaded unless noted under "Edits".
+URDFs and **collision** meshes used by the test suite (Tasks 1.4 / 1.4b). Each robot's
+`.urdf` plus its collision `.stl` meshes are vendored under `meshes/` (visual meshes are not —
+collision geometry is what the planner uses). Mesh files are referenced from the URDFs via
+`package://`/relative URIs and resolved by `resolve_mesh_uri()` (see the integration test
+`tests/unit/test_robot_meshes.cpp` for the package→directory map). Files are used **verbatim**
+as downloaded unless noted under "Edits".
 
 | File | Robot | DOF (datasheet) | Movable joints (this URDF) | Retrieved |
 |------|-------|-----------------|----------------------------|-----------|
@@ -40,5 +42,22 @@ no meshes; mesh loading is Task 1.4b, which resolves geometry separately). Files
 - Note: the original `ros-industrial/abb` repo has no root `LICENSE` file (license is declared
   per-package); the MIT-licensed dataset above is used as the redistribution source.
 
+## Collision meshes (vendored under `meshes/`)
+
+Same repositories and licenses as the URDFs above; downloaded 2026-06-27, byte-for-byte.
+
+| Robot | Vendored path | Count | Source |
+|-------|---------------|-------|--------|
+| UR5 | `meshes/example-robot-data/robots/ur_description/meshes/ur5/collision/*.stl` | 7 | example-robot-data (BSD-3-Clause) |
+| UR10 | `meshes/example-robot-data/robots/ur_description/meshes/ur10/collision/*.stl` | 7 | example-robot-data (BSD-3-Clause) |
+| Panda | `meshes/example-robot-data/robots/panda_description/meshes/collision/*.stl` | 9 | example-robot-data (BSD-3-Clause) |
+| iiwa | `meshes/kuka_iiwa/meshes/link_*.stl` | 8 | bullet3 (zlib) |
+| ABB IRB2400 | `meshes/abb_irb2400/collision/*.stl` | 7 | urdf_files_dataset (MIT) ← ROS-Industrial abb (BSD-3) |
+
+The vendored directory layout mirrors each URDF's mesh URI so `resolve_mesh_uri()` finds them
+(UR/Panda: `package://example-robot-data/...`; iiwa: relative `meshes/link_N.stl`; ABB:
+`package://collision/...`). `.stl` is marked `binary` in `.gitattributes` so the (binary) STL
+files are never EOL/encoding-mangled.
+
 ## Edits
-None. All files are byte-for-byte as downloaded on 2026-06-27.
+None. All URDFs and meshes are byte-for-byte as downloaded on 2026-06-27.

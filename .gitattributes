@@ -25,3 +25,8 @@ CMakeLists.txt text eol=lf
 *.so.*      binary
 *.bin       binary
 *.run       binary
+# Binary mesh assets — never apply EOL/encoding conversion (would corrupt them):
+*.stl       binary
+*.ply       binary
+*.fbx       binary
+*.glb       binary
