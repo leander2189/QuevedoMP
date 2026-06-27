@@ -24,3 +24,9 @@ target_link_libraries(test_robot_fixtures PRIVATE quevedomp::quevedomp GTest::gt
 target_compile_definitions(test_robot_fixtures
   PRIVATE QUEVEDOMP_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
 gtest_discover_tests(test_robot_fixtures)
+
+add_executable(test_mesh_io unit/test_mesh_io.cpp)
+target_link_libraries(test_mesh_io PRIVATE quevedomp::quevedomp GTest::gtest_main)
+target_compile_definitions(test_mesh_io
+  PRIVATE QUEVEDOMP_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
+gtest_discover_tests(test_mesh_io)

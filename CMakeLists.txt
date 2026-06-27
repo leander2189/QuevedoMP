@@ -42,10 +42,12 @@ endif()
 find_package(Eigen3 CONFIG REQUIRED)
 find_package(urdfdom REQUIRED)   # URDF parsing (Task 1.3)
 find_package(yaml-cpp REQUIRED)  # optional accel/jerk limit extension
+find_package(assimp REQUIRED)    # mesh loading STL/DAE/OBJ (Task 1.4b)
 
 add_library(quevedomp
   src/core/types.cpp
   src/core/rng.cpp
+  src/core/mesh_io.cpp
   src/robot/robot_model.cpp
 )
 add_library(quevedomp::quevedomp ALIAS quevedomp)
@@ -53,7 +55,7 @@ target_include_directories(quevedomp PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_include_directories(quevedomp PRIVATE ${urdfdom_INCLUDE_DIRS})
 target_compile_features(quevedomp PUBLIC cxx_std_20)
 target_link_libraries(quevedomp PUBLIC Eigen3::Eigen)
-target_link_libraries(quevedomp PRIVATE ${urdfdom_LIBRARIES} yaml-cpp)
+target_link_libraries(quevedomp PRIVATE ${urdfdom_LIBRARIES} yaml-cpp assimp::assimp)
 
 # ---- Optional CUDA toolchain validation --------------------------------------------------
 # The library stays CPU-only; this only builds a throwaway smoke test that proves nvcc + the

@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # QuevedoMP dev container — CUDA from day one (validate the GPU toolchain early).
 # The -devel image ships nvcc + CUDA headers. NO OptiX COPY here: OptiX is a login-gated
 # manual download (not in the repo) and putting it in an unattended build was the original
@@ -33,7 +32,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         clang clang-format clang-tidy clangd \
         libeigen3-dev libspdlog-dev libfmt-dev libyaml-cpp-dev \
         libgtest-dev libgmock-dev libfcl-dev liburdfdom-dev \
-        libassimp-dev \
+        libassimp-dev zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Optional OptiX SDK install (login-gated installer, never committed — gitignored).
