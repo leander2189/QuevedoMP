@@ -18,3 +18,9 @@ target_link_libraries(test_robot_model PRIVATE quevedomp::quevedomp GTest::gtest
 target_compile_definitions(test_robot_model
   PRIVATE QUEVEDOMP_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
 gtest_discover_tests(test_robot_model)
+
+add_executable(test_robot_fixtures unit/test_robot_fixtures.cpp)
+target_link_libraries(test_robot_fixtures PRIVATE quevedomp::quevedomp GTest::gtest_main)
+target_compile_definitions(test_robot_fixtures
+  PRIVATE QUEVEDOMP_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
+gtest_discover_tests(test_robot_fixtures)
