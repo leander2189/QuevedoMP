@@ -314,23 +314,38 @@ passthrough work end to end before we commit to deeper phases.
 ### Phase 0 EXIT (DoD — checked manually)
 - [x] Host setup §H done: `nvidia-smi` works in WSL; GPU passthrough into containers works
       (verified 2026-06-10: RTX 2000 Ada visible in-container via `--gpus all`).
-- [ ] `docker build -t quevedomp-cuda .devcontainer` exits 0; `nvidia-smi` works **inside** it.
-      ⚠ **Blocked 2026-06-10 by host networking**, see §N below: WSL (mirrored mode) currently
-      has zero outbound TCP, so apt inside `docker build` cannot fetch. Verification was run
-      against the pre-existing image + a host-side CMake 3.31 mount instead. **Re-run the
-      build once §N is resolved** — the committed Dockerfile (Kitware cmake, assimp, driver
-      caps) is otherwise unverified.
+- [x] `docker build -t quevedomp-cuda .devcontainer` exits 0; `nvidia-smi` works **inside** it.
+      ✅ **Resolved 2026-06-27** (§N): a clean `docker build --no-cache` from the WSL-native
+      engine fetched 49.5 MB of apt over the network and exited 0 — the mirrored-mode network
+      blocker is gone. The committed Dockerfile (Kitware cmake, assimp, driver caps, OptiX
+      build-arg stage) is now verified from scratch, incl. the OptiX SDK install
+      (`--build-arg OPTIX_INSTALLER=NVIDIA-OptiX-SDK-8.1.0-linux64-x86_64-35015278.sh`).
 - [x] `dev-gpu`: configure + build + `ctest` → `2 tests passed` incl. `cuda_smoke OK: result=42`
       (verified 2026-06-10 in-container on the real GPU; commit `e72a4b0`).
 - [x] `dev-cpu`: configure + build + `ctest` → `1 test passed`, with **no nvcc** required
       (verified 2026-06-10).
 - [x] No OptiX reference reachable unless Task 0.9 was deliberately enabled.
-- [ ] **Task 0.9 (now mandatory, M1):** an OptiX SDK sample initializes in-container.
-- **Then update memory `phase_status.md` to Phase-0-complete with the commit SHA.**
+- [x] **Task 0.9 (now mandatory, M1):** an OptiX sample initializes in-container.
+      ✅ **Closed 2026-06-27** (commit `b1dfeab`): `tools/optix_smoke` (`optixInit()` + device
+      context) passes under the `dev-optix` preset. OptiX-on-WSL2 needed a fix beyond the M1
+      note: this host's Windows driver (595.x) exposes only a dxcore *stub* `libnvoptix.so.1`
+      to WSL (no `optixQueryFunctionTable`), so the real runtime libs are extracted from the
+      matching NVIDIA **Linux** `.run` driver via `.devcontainer/setup-wsl-optix.sh` and loaded
+      ahead of the stub (gitignored `.devcontainer/wsl-optix/` + `LD_LIBRARY_PATH`). On native
+      Linux (the deployment target) the driver provides `libnvoptix.so.1` and none of this is
+      needed — see `docs/tutorials/testing.md`. Fallback tree (Embree CPU backend) NOT needed.
+
+**PHASE 0 COMPLETE — 2026-06-27.** Gate work in commits `b1dfeab` (OptiX gate) and `0de3dad`
+(native-Linux docs + WSL helper). All EXIT boxes green. Proceed to Phase 1.
 
 ---
 
 ## N. Host issue log (this machine)
+
+> **RESOLVED 2026-06-27.** WSL outbound TCP works again: a clean `docker build --no-cache`
+> fetched apt packages over the network and `nvidia-smi` works in-container. Host driver is
+> now 595.97 (was 576.57); `nvidia-smi` reports CUDA 13.2. Whatever fixed egress (driver/WSL
+> update or networking-mode change), the symptoms below no longer reproduce. Kept for history.
 
 **WSL outbound network is dead under mirrored mode (found 2026-06-10).** Symptoms: DNS
 resolves (dnsTunneling=true) but **all** outbound TCP from WSL fails with
