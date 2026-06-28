@@ -62,7 +62,29 @@ void Visualizer::log_mesh(const std::string &entity, const Mesh &mesh, const Tra
     tris.emplace_back(static_cast<uint32_t>(t.x()), static_cast<uint32_t>(t.y()),
                       static_cast<uint32_t>(t.z()));
   }
-  impl_->rec.log(entity, rerun::Mesh3D(positions).with_triangle_indices(tris));
+
+  // Per-vertex normals (area-weighted sum of incident face normals). rerun's mesh renderer
+  // needs normals to shade; without them surfaces render unlit/black and look invisible.
+  std::vector<Eigen::Vector3d> accum(mesh.vertices.size(), Eigen::Vector3d::Zero());
+  for (const auto &t : mesh.triangles) {
+    const Eigen::Vector3d &a = mesh.vertices[static_cast<std::size_t>(t.x())];
+    const Eigen::Vector3d &b = mesh.vertices[static_cast<std::size_t>(t.y())];
+    const Eigen::Vector3d &c = mesh.vertices[static_cast<std::size_t>(t.z())];
+    const Eigen::Vector3d face = (b - a).cross(c - a); // length ∝ triangle area
+    accum[static_cast<std::size_t>(t.x())] += face;
+    accum[static_cast<std::size_t>(t.y())] += face;
+    accum[static_cast<std::size_t>(t.z())] += face;
+  }
+  std::vector<rerun::Vector3D> normals;
+  normals.reserve(accum.size());
+  for (const auto &n : accum) {
+    const Eigen::Vector3d u = n.squaredNorm() > 0.0 ? n.normalized() : Eigen::Vector3d::UnitZ();
+    normals.emplace_back(static_cast<float>(u.x()), static_cast<float>(u.y()),
+                         static_cast<float>(u.z()));
+  }
+
+  impl_->rec.log(entity,
+                 rerun::Mesh3D(positions).with_triangle_indices(tris).with_vertex_normals(normals));
 }
 
 void Visualizer::log_robot(const std::string &entity, const RobotModel &model,
