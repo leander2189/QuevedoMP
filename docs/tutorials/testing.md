@@ -1,4 +1,7 @@
-# Testing phase 0
+# Testing & verification
+
+> Phase 0 (container + CUDA/OptiX gates) is below; Phase 1's full unit suite and an index of
+> where each area's tests live are at the end of this file.
 
 ```bash
 cd /mnt/d/Inventos/quevedoMP
@@ -132,3 +135,37 @@ system, code, or container is coupled to WSL.
 > `setup-wsl-optix.sh <new-version>` so the runtime libs stay ABI-compatible with the kernel.
 
 Once it passes, commit everything and mark Phase 0 complete.
+
+---
+
+# Phase 1 — the full unit-test suite
+
+From Phase 1 on, the library has real code and many tests. Run them all in the container with
+either GPU preset (`dev-cpu` needs no GPU; `dev-gpu` adds the CUDA smoke test):
+
+```bash
+docker run --rm --gpus all -v "$(pwd):/workspace" -w /workspace quevedomp-cuda bash -lc "
+  cmake --preset dev-cpu &&
+  cmake --build --preset dev-cpu &&
+  ctest --preset dev-cpu --output-on-failure
+"
+# Expect: all tests passed (dev-cpu = no nvcc; dev-gpu also runs cuda_smoke).
+```
+
+Builds use ASan/UBSan in Debug, so the suite is also a memory-safety check. Each task's exact
+**Verify** / **Done-when** condition is listed per task in the build plan (see below).
+
+# Where each area's tests are documented
+
+| Area | Document |
+|------|----------|
+| Per-task **Verify / Done-when** for every task (the source of truth) | [`../QuevedoMP-BUILD-PLAN.md`](../QuevedoMP-BUILD-PLAN.md) |
+| Phase 0 gates (container build, CUDA + OptiX smoke tests) | this file, above |
+| **Visualization** — building with rerun and viewing FK/IK/robot `.rrd`s | [`visualization.md`](visualization.md) |
+| **Fuzzing + coverage gates** — URDF fuzzer, the 80% coverage gate, repro commands | [`../../tests/fuzz/README.md`](../../tests/fuzz/README.md) |
+| Robot fixture **provenance & licenses** (the URDFs the tests load) | [`../../tests/fixtures/robots/PROVENANCE.md`](../../tests/fixtures/robots/PROVENANCE.md) |
+| Architecture decisions referenced by tests (e.g. RNG determinism) | [`../architecture/`](../architecture/) (e.g. `adr-006-rng.md`) |
+
+> Preset cheat-sheet (`cmake --list-presets`): `dev-cpu` / `dev-gpu` (unit suite), `dev-optix`
+> (OptiX gate), `dev-viz` (rerun visualization → [`visualization.md`](visualization.md)),
+> `coverage` and `fuzz` (Task 1.9 gates → [`../../tests/fuzz/README.md`](../../tests/fuzz/README.md)).
