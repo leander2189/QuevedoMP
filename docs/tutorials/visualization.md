@@ -33,30 +33,47 @@ Each recording contains, for that robot:
 > builds Apache Arrow from source (a few minutes). Subsequent builds are cached. The preset sets
 > `CMAKE_POLICY_VERSION_MINIMUM=3.5` so Arrow's bundled mimalloc configures under modern CMake.
 
-## 2. Install the viewer (must be 0.33.1)
+## 2. Install the viewer in WSL (must be 0.33.1)
 
-Pick whichever matches where you want the window to appear:
+The viewer is a normal Linux GUI app; on Windows 11 it displays through **WSLg** (no X server
+to set up — check `echo $WAYLAND_DISPLAY` prints `wayland-0`). Ubuntu 24.04 ships an
+externally-managed Python, so install into a **venv** rather than system-wide:
 
 ```bash
-# On Windows (native window; opens files from the mounted drive):
-py -m pip install "rerun-sdk==0.33.1"     # provides the `rerun` viewer
-
-# …or inside WSL (needs WSLg for the GUI):
-pip install "rerun-sdk==0.33.1"
+sudo apt-get install -y python3-venv        # once, if venv is missing
+python3 -m venv ~/.venvs/rerun
+~/.venvs/rerun/bin/pip install "rerun-sdk==0.33.1"
+~/.venvs/rerun/bin/rerun --version          # -> rerun-cli 0.33.1 ...
 ```
 
-## 3. Open a recording
+Optional convenience: `echo 'alias rerun=~/.venvs/rerun/bin/rerun' >> ~/.bashrc && source ~/.bashrc`
+(commands below assume this alias; otherwise use the full `~/.venvs/rerun/bin/rerun` path). To
+silence the first-run telemetry notice: `~/.venvs/rerun/bin/rerun analytics disable`.
+
+## 3. Open a recording (WSL)
+
+The `.rrd` files live on the mounted drive, so open them straight from the repo in WSL:
 
 ```bash
-# From Windows PowerShell (the repo is on D:):
-rerun D:\Inventos\quevedoMP\build\dev-viz\viz_out\panda.rrd
-
-# …or from WSL:
+cd /mnt/d/Inventos/quevedoMP
 rerun build/dev-viz/viz_out/panda.rrd
+# …or load all five robots at once:
+rerun build/dev-viz/viz_out/*.rrd
 ```
 
-Drag to orbit, scroll to zoom; the left panel lists the logged entities (`world/<robot>/...`).
-You can open several `.rrd`s at once, or pass them all: `rerun build/dev-viz/viz_out/*.rrd`.
+A native window opens via WSLg: drag to orbit, scroll to zoom; the left panel lists the logged
+entities (`world/<robot>/...`), the right shows the timeline.
+
+**Troubleshooting (WSLg GPU):** if the window fails to open or the 3D view is black/garbled,
+force software rendering:
+
+```bash
+LIBGL_ALWAYS_SOFTWARE=1 WGPU_BACKEND=gl rerun build/dev-viz/viz_out/panda.rrd
+```
+
+If WSLg itself isn't working, update WSL from Windows (`wsl --update`) and restart it
+(`wsl --shutdown`). (Prefer to view on Windows instead? `py -m pip install rerun-sdk==0.33.1`
+then `rerun D:\Inventos\quevedoMP\build\dev-viz\viz_out\panda.rrd`.)
 
 ## Using the API from your own code
 
