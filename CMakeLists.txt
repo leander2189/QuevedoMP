@@ -53,6 +53,7 @@ add_library(quevedomp
   src/kinematics/fk.cpp
   src/kinematics/jacobian.cpp
   src/kinematics/ik.cpp
+  src/viz/visualizer.cpp
 )
 add_library(quevedomp::quevedomp ALIAS quevedomp)
 target_include_directories(quevedomp PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -60,6 +61,19 @@ target_include_directories(quevedomp PRIVATE ${urdfdom_INCLUDE_DIRS})
 target_compile_features(quevedomp PUBLIC cxx_std_20)
 target_link_libraries(quevedomp PUBLIC Eigen3::Eigen)
 target_link_libraries(quevedomp PRIVATE ${urdfdom_LIBRARIES} yaml-cpp assimp::assimp)
+
+# ---- Optional rerun.io visualization (Task 1.8, deviation D3) -----------------------------
+# OFF by default: viz/visualizer.cpp compiles to no-ops and the SDK is never fetched. When ON,
+# pull the prebuilt rerun C++ SDK (matches the `rerun` viewer / `pip install rerun-sdk==0.33.1`).
+if(QUEVEDOMP_WITH_RERUN)
+  include(FetchContent)
+  FetchContent_Declare(rerun_sdk
+    URL https://github.com/rerun-io/rerun/releases/download/0.33.1/rerun_cpp_sdk.zip)
+  FetchContent_MakeAvailable(rerun_sdk)
+  target_link_libraries(quevedomp PRIVATE rerun_sdk)
+  target_compile_definitions(quevedomp PRIVATE QUEVEDOMP_WITH_RERUN)
+  message(STATUS "rerun visualization: ON (C++ SDK 0.33.1)")
+endif()
 
 # ---- Optional CUDA toolchain validation --------------------------------------------------
 # The library stays CPU-only; this only builds a throwaway smoke test that proves nvcc + the
@@ -94,4 +108,10 @@ if(QUEVEDOMP_BUILD_TESTS)
   find_package(GTest REQUIRED)
   find_package(Threads REQUIRED)  # test_rng exercises spawn() across threads
   add_subdirectory(tests)
+endif()
+
+# ---- Examples ----------------------------------------------------------------------------
+option(QUEVEDOMP_BUILD_EXAMPLES "Build example programs" ON)
+if(QUEVEDOMP_BUILD_EXAMPLES)
+  add_subdirectory(examples/cpp)
 endif()

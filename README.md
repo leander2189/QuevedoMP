@@ -49,8 +49,14 @@ VS Code users: "Reopen in Container" uses `.devcontainer/` directly.
 CPU deps come from the container's system `apt` (build-plan deviation D2), found via CMake:
 Eigen3 (core math, public), GoogleTest (tests). **URDF parsing uses `urdfdom`** (chosen over
 hand-rolled tinyxml2 — it is purpose-built, already packaged, and yields the full joint/link
-model); `yaml-cpp` carries the optional acceleration/jerk limit extension. urdfdom and yaml-cpp
-are private to the library — they do not appear in any public header.
+model); `yaml-cpp` carries the optional acceleration/jerk limit extension; **`assimp`** loads
+STL/DAE/OBJ meshes. urdfdom, yaml-cpp and assimp are private to the library — they do not appear
+in any public header.
+
+**Optional visualization** (`WITH_RERUN=ON`, off by default): the `dev-viz` preset pulls the
+[rerun](https://rerun.io) C++ SDK via CMake `FetchContent` to log robots/FK/IK to `.rrd` files.
+With it off, `viz/Visualizer` compiles to no-ops and nothing is fetched. See
+[`docs/tutorials/visualization.md`](docs/tutorials/visualization.md).
 
 ## Layout
 

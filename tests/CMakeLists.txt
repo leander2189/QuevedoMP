@@ -58,3 +58,9 @@ target_link_libraries(test_ik PRIVATE quevedomp::quevedomp GTest::gtest_main)
 target_compile_definitions(test_ik
   PRIVATE QUEVEDOMP_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
 gtest_discover_tests(test_ik)
+
+add_executable(test_viz unit/test_viz.cpp)
+target_link_libraries(test_viz PRIVATE quevedomp::quevedomp GTest::gtest_main)
+target_compile_definitions(test_viz
+  PRIVATE QUEVEDOMP_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
+gtest_discover_tests(test_viz)

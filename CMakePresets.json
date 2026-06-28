@@ -42,6 +42,24 @@
       }
     },
     {
+      "name": "dev-viz",
+      "displayName": "Debug, rerun viz ON (Task 1.8)",
+      "description": "CPU build with WITH_RERUN=ON. FetchContent pulls the rerun C++ SDK 0.33.1; builds the quevedomp_visualize example that emits .rrd files. Sanitizers off (the prebuilt rerun/Arrow libs are not instrumented).",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/dev-viz",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "QUEVEDOMP_WITH_CUDA": "OFF",
+        "QUEVEDOMP_WITH_OPTIX": "OFF",
+        "QUEVEDOMP_WITH_RERUN": "ON",
+        "QUEVEDOMP_ENABLE_SANITIZERS": "OFF"
+      },
+      "environment": {
+        "_comment": "Arrow 18 (pulled by rerun) bundles a mimalloc whose CMakeLists requires CMake <3.5, which modern CMake rejects; this env var (read by nested ExternalProject configures) restores the old policy floor.",
+        "CMAKE_POLICY_VERSION_MINIMUM": "3.5"
+      }
+    },
+    {
       "name": "release",
       "displayName": "Release, CUDA ON (OptiX flips ON in Phase 2b)",
       "generator": "Ninja",
@@ -57,6 +75,8 @@
     { "name": "dev-gpu",   "configurePreset": "dev-gpu" },
     { "name": "dev-cpu",   "configurePreset": "dev-cpu" },
     { "name": "dev-optix", "configurePreset": "dev-optix" },
+    { "name": "dev-viz",   "configurePreset": "dev-viz",
+      "environment": { "CMAKE_POLICY_VERSION_MINIMUM": "3.5" } },
     { "name": "release",   "configurePreset": "release" }
   ],
   "testPresets": [
@@ -73,6 +93,11 @@
     {
       "name": "dev-optix",
       "configurePreset": "dev-optix",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "dev-viz",
+      "configurePreset": "dev-viz",
       "output": { "outputOnFailure": true }
     }
   ]
