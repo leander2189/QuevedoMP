@@ -43,7 +43,11 @@ std::vector<Transform> fk_all(const RobotModel &model, const JointPosition &q) {
 
   // Pre-order tree walk from the root, accumulating base-frame poses:
   //   tf[child] = tf[parent] · joint_origin · joint_motion(q).
+  // `visited` guards against a cyclic child graph in a malformed model (found by the Task 1.9
+  // fuzzer): without it the walk would revisit links forever and grow the stack until OOM.
+  std::vector<char> visited(links.size(), 0);
   tf[root_idx] = Transform::Identity();
+  visited[root_idx] = 1;
   std::vector<int> stack{root_idx};
   while (!stack.empty()) {
     const int li = stack.back();
@@ -55,6 +59,9 @@ std::vector<Transform> fk_all(const RobotModel &model, const JointPosition &q) {
       if (child == nullptr)
         continue; // dangling joint child; skip defensively
       const int ci = static_cast<int>(child - links.data());
+      if (visited[ci])
+        continue; // cycle — already placed this link
+      visited[ci] = 1;
       tf[ci] = tf[li] * j.origin * joint_motion(j, qi);
       stack.push_back(ci);
     }

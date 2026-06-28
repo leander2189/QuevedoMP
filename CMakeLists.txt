@@ -19,6 +19,8 @@ option(QUEVEDOMP_WITH_RERUN      "Enable rerun.io visualization (Phase 1)"   OFF
 option(QUEVEDOMP_WITH_PYTHON     "Build nanobind Python bindings (Phase 4)"  OFF)
 option(QUEVEDOMP_BUILD_TESTS     "Build tests"                               ON)
 option(QUEVEDOMP_ENABLE_SANITIZERS "Enable ASan/UBSan in Debug builds"       OFF)
+option(QUEVEDOMP_ENABLE_COVERAGE "Build with gcov coverage instrumentation"  OFF)
+option(QUEVEDOMP_BUILD_FUZZERS   "Build libFuzzer fuzz targets (needs clang)" OFF)
 
 # ---- Testing ------------------------------------------------------------------------------
 # enable_testing() must run BEFORE any add_subdirectory() that calls add_test(), or those
@@ -31,6 +33,18 @@ endif()
 # ---- Sanitizers (Debug, CPU) -------------------------------------------------------------
 if(QUEVEDOMP_ENABLE_SANITIZERS AND CMAKE_BUILD_TYPE STREQUAL "Debug")
   add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=address,undefined)
+endif()
+
+# ---- Coverage (Task 1.9 gate) — gcov instrumentation across all targets defined below -----
+if(QUEVEDOMP_ENABLE_COVERAGE)
+  add_compile_options(--coverage -O0 -g)
+  add_link_options(--coverage)
+endif()
+
+# ---- Fuzzing (Task 1.9) — libFuzzer + ASan/UBSan; the fuzz exe adds -fsanitize=fuzzer ------
+if(QUEVEDOMP_BUILD_FUZZERS)
+  add_compile_options(-fsanitize=fuzzer-no-link,address,undefined -fno-omit-frame-pointer -O1 -g)
   add_link_options(-fsanitize=address,undefined)
 endif()
 
@@ -114,4 +128,9 @@ endif()
 option(QUEVEDOMP_BUILD_EXAMPLES "Build example programs" ON)
 if(QUEVEDOMP_BUILD_EXAMPLES)
   add_subdirectory(examples/cpp)
+endif()
+
+# ---- Fuzz targets ------------------------------------------------------------------------
+if(QUEVEDOMP_BUILD_FUZZERS)
+  add_subdirectory(tests/fuzz)
 endif()

@@ -32,7 +32,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         clang clang-format clang-tidy clangd \
         libeigen3-dev libspdlog-dev libfmt-dev libyaml-cpp-dev \
         libgtest-dev libgmock-dev libfcl-dev liburdfdom-dev \
-        libassimp-dev zlib1g-dev \
+        libassimp-dev zlib1g-dev gcovr \
     && rm -rf /var/lib/apt/lists/*
 
 # Optional OptiX SDK install (login-gated installer, never committed — gitignored).

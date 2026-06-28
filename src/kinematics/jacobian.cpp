@@ -1,5 +1,6 @@
 #include "quevedomp/kinematics/jacobian.hpp"
 
+#include <cstddef>
 #include <stdexcept>
 #include <vector>
 
@@ -19,9 +20,13 @@ Eigen::MatrixXd jacobian(const RobotModel &model, const JointPosition &q, const 
   const Eigen::Vector3d p_e = tf[static_cast<std::size_t>(target - links.data())].translation();
   Eigen::MatrixXd j = Eigen::MatrixXd::Zero(6, static_cast<Eigen::Index>(model.dof()));
 
-  // Each movable joint on the base→link path contributes one column.
+  // Each movable joint on the base→link path contributes one column. The step bound guards
+  // against a cyclic parent relationship in a malformed model (see RobotModel::chain_to).
+  std::size_t steps = 0;
   for (const Link *l = target; l->parent_joint >= 0;
        l = model.find_link(joints[l->parent_joint].parent_link)) {
+    if (++steps > joints.size())
+      throw std::runtime_error("jacobian: cyclic joint structure");
     const Joint &joint = joints[l->parent_joint];
     if (joint.dof_index < 0)
       continue; // fixed joint

@@ -459,10 +459,25 @@ Options (user decision — changes global WSL behavior):
 - **Verify:** minimal build (`WITH_RERUN=OFF`) still compiles and links; with ON, a CI artifact image is produced.
 - **Done-when:** both build modes pass; visual-sanity artifact stored in CI.
 
-### Task 1.9 — Fuzz + coverage gate
-- libFuzzer harness on malformed URDFs; coverage measurement.
-- **Verify:** fuzzer runs N iterations without crash/UB (ASan clean); coverage **> 80%** in `core/types`, `robot`, `kinematics`.
-- **Phase 1 EXIT:** all of §6 Phase 1 DoD met; update memory.
+### Task 1.9 — Fuzz + coverage gate ✅ (2026-06-28)
+- libFuzzer harness on malformed URDFs (`tests/fuzz/fuzz_urdf`, `fuzz` preset = clang +
+  fuzzer/ASan/UBSan); coverage via g++ `--coverage` + `gcovr` (`coverage` preset). See
+  `tests/fuzz/README.md` for the exact gate commands.
+- **Verify:** ✅ bounded fuzz (54,192 iterations, RSS flat ~450 MB) exits 0 with no crash/UB, the
+  urdfdom third-party leak suppressed via `tests/fuzz/lsan_suppressions.txt`. ✅ coverage **91%**
+  (all of core/robot/kinematics ≥ 84%, gate is 80%).
+- **Bugs found + fixed:** the fuzzer caught a real memory-safety bug — a cyclic joint structure
+  drove `chain_to`/`fk_all`/`jacobian` into an unbounded walk (2 GB OOM). Fixed with cycle guards
+  + a deep-XML-nesting guard + null-checked geometry casts; regressions in
+  `tests/unit/test_robot_robustness.cpp`.
+
+### Phase 1 EXIT (DoD — checked manually) ✅ **COMPLETE 2026-06-28**
+- [x] 1.1 core/types · 1.2 core/rng (+ADR-006) · 1.3 URDF→RobotModel · 1.4 five robot URDFs ·
+      1.4b mesh loading (assimp) + collision geometry + URI resolver · 1.5 FK (<1e-9 vs analytic
+      + independent reimpl) · 1.6 Jacobian (<1e-6 vs finite difference) · 1.7 numerical IK
+      (FK∘IK identity, warm-seed <10 ms) · 1.8 viz (rerun, no-op when OFF) · 1.9 fuzz + coverage.
+- [x] `dev-cpu` 79/79 (ASan/UBSan), `dev-gpu` 80/80; coverage ≥ 80%; fuzz gate clean.
+- Commits: Task 1.1 `4cbfd35` … Task 1.9 (this commit). Next: **Phase 2a** (collision interface + FCL).
 
 ---
 

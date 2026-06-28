@@ -1,0 +1,9 @@
+# LeakSanitizer suppressions for the URDF fuzzer (Task 1.9).
+#
+# urdfdom (third-party) leaks memory when its TinyXML-based parser is fed malformed URDF
+# (allocations at urdf_parser/src/model.cpp:252, in liburdfdom_model). We do not control it,
+# and in normal use a robot description is parsed once from disk — the leak only matters under
+# adversarial fuzzing. Suppress urdfdom's leaks so the fuzzer surfaces only leaks in OUR code.
+leak:liburdfdom
+leak:urdfdom
+leak:libtinyxml

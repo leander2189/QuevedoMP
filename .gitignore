@@ -47,3 +47,9 @@ NVIDIA-OptiX-SDK-*.sh
 # OptiX-on-WSL runtime libs extracted from the NVIDIA Linux .run driver
 # (host-/driver-specific binaries — never commit). See docs/tutorials/testing.md.
 .devcontainer/wsl-optix/
+
+# libFuzzer artifacts (written to the working dir on a finding)
+crash-*
+leak-*
+timeout-*
+oom-*

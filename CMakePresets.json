@@ -60,6 +60,37 @@
       }
     },
     {
+      "name": "coverage",
+      "displayName": "Debug, gcov coverage (Task 1.9 gate)",
+      "description": "g++ --coverage, no sanitizers; build + ctest, then gcovr to gate line coverage in core/robot/kinematics.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/coverage",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "QUEVEDOMP_WITH_CUDA": "OFF",
+        "QUEVEDOMP_ENABLE_SANITIZERS": "OFF",
+        "QUEVEDOMP_ENABLE_COVERAGE": "ON",
+        "QUEVEDOMP_BUILD_EXAMPLES": "OFF"
+      }
+    },
+    {
+      "name": "fuzz",
+      "displayName": "Debug, libFuzzer (Task 1.9)",
+      "description": "clang + -fsanitize=fuzzer,address,undefined. Builds the URDF fuzz target only.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/fuzz",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "QUEVEDOMP_WITH_CUDA": "OFF",
+        "QUEVEDOMP_ENABLE_SANITIZERS": "OFF",
+        "QUEVEDOMP_BUILD_FUZZERS": "ON",
+        "QUEVEDOMP_BUILD_TESTS": "OFF",
+        "QUEVEDOMP_BUILD_EXAMPLES": "OFF"
+      }
+    },
+    {
       "name": "release",
       "displayName": "Release, CUDA ON (OptiX flips ON in Phase 2b)",
       "generator": "Ninja",
@@ -77,6 +108,8 @@
     { "name": "dev-optix", "configurePreset": "dev-optix" },
     { "name": "dev-viz",   "configurePreset": "dev-viz",
       "environment": { "CMAKE_POLICY_VERSION_MINIMUM": "3.5" } },
+    { "name": "coverage",  "configurePreset": "coverage" },
+    { "name": "fuzz",      "configurePreset": "fuzz" },
     { "name": "release",   "configurePreset": "release" }
   ],
   "testPresets": [

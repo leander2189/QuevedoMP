@@ -4,10 +4,10 @@
 library for robot-arm trajectory planning. ROS-free core, clean CPU/GPU backend abstraction,
 rigorous differential testing. Named after Leonardo Torres Quevedo (1852–1936).
 
-> Status: **Phase 0 complete; Phase 1 in progress.** Phase 0 proved the build environment,
-> the CUDA toolchain, the OptiX validation gate, and the test harness end to end. Phase 1
-> (robot model, FK, IK) has begun — `core/types` (the Eigen-only foundational value types) is
-> the first library code. See
+> Status: **Phase 1 complete; Phase 2a next.** Phase 0 proved the build/CUDA/OptiX/test
+> environment; Phase 1 delivered the CPU robot core — types, deterministic RNG, URDF parsing,
+> mesh loading, FK/Jacobian/IK (validated to <1e-9 / <1e-6), rerun visualization, and a
+> fuzz + >80%-coverage gate. Phase 2a (collision interface + FCL backend) is next. See
 > [`QuevedoMP-SPEC.md`](QuevedoMP-SPEC.md) for the architecture and
 > [`docs/QuevedoMP-BUILD-PLAN.md`](docs/QuevedoMP-BUILD-PLAN.md) for the step-by-step plan.
 

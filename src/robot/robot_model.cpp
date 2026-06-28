@@ -54,10 +54,40 @@ void apply_yaml_extension(const std::string &yaml_text, std::vector<Joint> &join
   }
 }
 
+// Defensive guard for the untrusted-input boundary: urdfdom's recursive XML parse / link-tree
+// build can stack-overflow on pathologically deep nesting (found by the Task 1.9 fuzzer — our
+// own code has no recursion to overflow). Real URDF is ~5 levels deep, so cap nesting well above
+// any robot before handing the bytes to urdfdom. Conservative: '<' inside comments/strings may
+// be counted, which only rejects already-suspicious input.
+void reject_if_pathological(const std::string &xml) {
+  constexpr int kMaxDepth = 256;
+  int depth = 0;
+  for (std::size_t i = 0; i + 1 < xml.size(); ++i) {
+    if (xml[i] != '<')
+      continue;
+    const char next = xml[i + 1];
+    if (next == '/') {
+      if (depth > 0)
+        --depth; // closing tag
+    } else if (next == '?' || next == '!') {
+      // XML declaration / comment / doctype — not an element.
+    } else {
+      const std::size_t close = xml.find('>', i + 1);
+      if (close == std::string::npos)
+        break; // malformed; let urdfdom reject it
+      if (xml[close - 1] != '/' && ++depth > kMaxDepth) {
+        throw std::runtime_error("RobotModel::from_urdf: XML nesting too deep");
+      }
+      i = close;
+    }
+  }
+}
+
 } // namespace
 
 std::shared_ptr<const RobotModel> RobotModel::from_urdf(const std::string &urdf_xml,
                                                         std::optional<std::string> yaml_extension) {
+  reject_if_pathological(urdf_xml);
   const urdf::ModelInterfaceSharedPtr model = urdf::parseURDF(urdf_xml);
   if (!model)
     throw std::runtime_error("RobotModel::from_urdf: failed to parse URDF");
@@ -132,9 +162,13 @@ std::shared_ptr<const RobotModel> RobotModel::from_urdf(const std::string &urdf_
         continue;
       CollisionGeometry cg;
       cg.origin = to_transform(col->origin);
+      // The dynamic_pointer_cast can return null if urdfdom reports a geometry `type` that does
+      // not match the concrete object (possible on malformed input) — skip rather than deref.
       switch (col->geometry->type) {
       case urdf::Geometry::MESH: {
         const auto mesh = std::dynamic_pointer_cast<urdf::Mesh>(col->geometry);
+        if (!mesh)
+          continue;
         cg.type = GeometryType::Mesh;
         cg.mesh_filename = mesh->filename;
         cg.mesh_scale = Eigen::Vector3d(mesh->scale.x, mesh->scale.y, mesh->scale.z);
@@ -142,18 +176,24 @@ std::shared_ptr<const RobotModel> RobotModel::from_urdf(const std::string &urdf_
       }
       case urdf::Geometry::BOX: {
         const auto box = std::dynamic_pointer_cast<urdf::Box>(col->geometry);
+        if (!box)
+          continue;
         cg.type = GeometryType::Box;
         cg.box_half_extents = Eigen::Vector3d(box->dim.x, box->dim.y, box->dim.z) * 0.5;
         break;
       }
       case urdf::Geometry::SPHERE: {
         const auto sph = std::dynamic_pointer_cast<urdf::Sphere>(col->geometry);
+        if (!sph)
+          continue;
         cg.type = GeometryType::Sphere;
         cg.sphere_radius = sph->radius;
         break;
       }
       case urdf::Geometry::CYLINDER: {
         const auto cyl = std::dynamic_pointer_cast<urdf::Cylinder>(col->geometry);
+        if (!cyl)
+          continue;
         cg.type = GeometryType::Cylinder;
         cg.cylinder_radius = cyl->radius;
         cg.cylinder_length = cyl->length;
@@ -199,11 +239,17 @@ KinematicChain RobotModel::chain_to(const std::string &tip_link) const {
   chain.base_link = root_link_;
   chain.tip_link = tip_link;
 
-  // Walk parent joints from tip up to the root, then reverse into base→tip order.
+  // Walk parent joints from tip up to the root, then reverse into base→tip order. A malformed
+  // model can have a cyclic parent relationship (found by the Task 1.9 fuzzer); a valid acyclic
+  // path visits each joint at most once, so a longer walk means a cycle — bail instead of
+  // looping forever (which grows `rev` until OOM).
   std::vector<int> rev;
   const Link *link = find_link(tip_link);
   while (link != nullptr && link->parent_joint >= 0) {
     rev.push_back(link->parent_joint);
+    if (rev.size() > joints_.size()) {
+      throw std::runtime_error("RobotModel::chain_to: cyclic joint structure");
+    }
     link = find_link(joints_[link->parent_joint].parent_link);
   }
   chain.joints.assign(rev.rbegin(), rev.rend());

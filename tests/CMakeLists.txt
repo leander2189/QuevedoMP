@@ -25,6 +25,13 @@ target_compile_definitions(test_robot_fixtures
   PRIVATE QUEVEDOMP_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
 gtest_discover_tests(test_robot_fixtures)
 
+add_executable(test_robot_robustness unit/test_robot_robustness.cpp)
+target_link_libraries(test_robot_robustness PRIVATE quevedomp::quevedomp GTest::gtest_main)
+# These tests feed malformed URDF on purpose; urdfdom (third-party) leaks on such input, so
+# suppress its leaks under ASan/LSan — the same suppression the fuzzer uses (Task 1.9).
+gtest_discover_tests(test_robot_robustness PROPERTIES
+  ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_SOURCE_DIR}/tests/fuzz/lsan_suppressions.txt")
+
 add_executable(test_mesh_io unit/test_mesh_io.cpp)
 target_link_libraries(test_mesh_io PRIVATE quevedomp::quevedomp GTest::gtest_main)
 target_compile_definitions(test_mesh_io
