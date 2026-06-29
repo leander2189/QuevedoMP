@@ -67,6 +67,7 @@ add_library(quevedomp
   src/kinematics/fk.cpp
   src/kinematics/jacobian.cpp
   src/kinematics/ik.cpp
+  src/collision/collision_scene.cpp
   src/viz/visualizer.cpp
 )
 add_library(quevedomp::quevedomp ALIAS quevedomp)

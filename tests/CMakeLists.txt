@@ -71,3 +71,7 @@ target_link_libraries(test_viz PRIVATE quevedomp::quevedomp GTest::gtest_main)
 target_compile_definitions(test_viz
   PRIVATE QUEVEDOMP_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
 gtest_discover_tests(test_viz)
+
+add_executable(test_collision_contract unit/test_collision_contract.cpp)
+target_link_libraries(test_collision_contract PRIVATE quevedomp::quevedomp GTest::gtest_main)
+gtest_discover_tests(test_collision_contract)
