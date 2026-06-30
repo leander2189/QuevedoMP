@@ -75,3 +75,7 @@ gtest_discover_tests(test_viz)
 add_executable(test_collision_contract unit/test_collision_contract.cpp)
 target_link_libraries(test_collision_contract PRIVATE quevedomp::quevedomp GTest::gtest_main)
 gtest_discover_tests(test_collision_contract)
+
+add_executable(test_collision_fcl unit/test_collision_fcl.cpp)
+target_link_libraries(test_collision_fcl PRIVATE quevedomp::quevedomp GTest::gtest_main)
+gtest_discover_tests(test_collision_fcl)

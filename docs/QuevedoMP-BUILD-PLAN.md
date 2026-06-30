@@ -489,9 +489,19 @@ Options (user decision — changes global WSL behavior):
 - Ratify the **§12 FK-location decision** (v0 = scene-internal FK) in an ADR before coding the backend.
 - **Verify:** headers compile against a stub; signatures match §4.2 (no CUDA types present).
 
-### Task 2a.2 — FCL backend `query_batch` (boolean)
+### Task 2a.2 — FCL backend `query_batch` (boolean) ✅ (2026-06-30)
 - Broad-phase managers for environment + posed robot links; per-config FK → update transforms → `collide`.
-- **Verify:** closed-form sphere-sphere / sphere-box / box-box cases (known overlap/clear).
+- **Verify:** ✅ closed-form sphere-sphere / sphere-box / box-box (overlap & clear), environment
+  mesh, robot-vs-self honoring the ACM, multi-config batch, `move_object`/`remove_object`, and
+  `BackendHint::ForceOptix` rejects (Phase 2b). `tests/unit/test_collision_fcl.cpp`.
+- Implementation: `src/collision/fcl_scene.cpp` (FCL 0.7, `find_package(fcl CONFIG)`, private dep).
+  Scene-internal FK (ADR-015); env geometry built once into a shared const broad-phase manager,
+  posed robot objects + their manager live in the per-thread `Workspace` (lock-free queries).
+- **Known limitation (documented):** robot links whose URDF collision element is a *mesh* are
+  skipped here (RobotModel keeps the unresolved `package://` URI; wiring the resolver into the
+  scene is deferred to the high-poly fixture work, Task B.1 / 2a.6). Primitive robot collision
+  geometry (box/sphere/cylinder) and environment meshes are fully supported.
+- dev-cpu 92/92, dev-gpu 93/93.
 
 ### Task 2a.3 — FCL distance + witness
 - Signed min-distance, clamp at `max_distance`, witness pairs (§4.3 semantics).
