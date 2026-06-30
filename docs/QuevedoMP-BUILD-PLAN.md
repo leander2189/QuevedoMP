@@ -497,11 +497,20 @@ Options (user decision — changes global WSL behavior):
 - Implementation: `src/collision/fcl_scene.cpp` (FCL 0.7, `find_package(fcl CONFIG)`, private dep).
   Scene-internal FK (ADR-015); env geometry built once into a shared const broad-phase manager,
   posed robot objects + their manager live in the per-thread `Workspace` (lock-free queries).
-- **Known limitation (documented):** robot links whose URDF collision element is a *mesh* are
-  skipped here (RobotModel keeps the unresolved `package://` URI; wiring the resolver into the
-  scene is deferred to the high-poly fixture work, Task B.1 / 2a.6). Primitive robot collision
-  geometry (box/sphere/cylinder) and environment meshes are fully supported.
+- Primitive robot collision geometry (box/sphere/cylinder) and environment meshes fully supported;
+  robot *mesh* links land in Task 2a.2b (below).
 - dev-cpu 92/92, dev-gpu 93/93.
+
+### Task 2a.2b — Robot-link mesh collision (resolve + load + BVH) ✅ (2026-06-30)
+- Most real URDF links collide by *mesh*. `make_static_scene` gains a `MeshSources`
+  `{package→dir}` map; the FCL scene resolves (`resolve_mesh_uri`) + loads (`load_mesh`) + scales
+  each robot mesh link at build time, caching by URI+scale, then builds the same FCL `BVHModel`
+  environment meshes already use. A mesh URI that can't be resolved/loaded **throws** — never
+  silently skipped. (All Task 1.4b infra; no new collision capability — closes the 2a.2 gap so the
+  CPU pipeline works on real robots before 2a.3 builds on top.)
+- **Verify:** ✅ the real UR5 fixture (all-mesh collision geometry) builds a scene, collides with an
+  enclosing box and clears a far one; a mesh robot built without `MeshSources` throws.
+  `tests/unit/test_collision_fcl.cpp` (`FclMeshLinks.*`). dev-cpu 94/94, dev-gpu 95/95.
 
 ### Task 2a.3 — FCL distance + witness
 - Signed min-distance, clamp at `max_distance`, witness pairs (§4.3 semantics).

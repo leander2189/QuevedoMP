@@ -3,7 +3,11 @@
 // honoring the ACM, and a multi-config batch. (Distance/witness is Task 2a.3.)
 #include <gtest/gtest.h>
 
+#include <fstream>
 #include <memory>
+#include <sstream>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <Eigen/Core>
@@ -55,6 +59,22 @@ bool collide_env(const char *robot_urdf, const Geometry &env_geom, const Transfo
   QueryOptions opts;
   opts.check_self_collision = false;
   return scene->query(robot, JointPosition(), opts, *ws).in_collision;
+}
+
+// ---- fixture-robot (real meshes) helpers -------------------------------------------------------
+std::string fixtures() { return std::string(QUEVEDOMP_FIXTURE_DIR); }
+std::string mesh_root() { return fixtures() + "/robots/meshes"; }
+
+std::string read_text(const std::string &path) {
+  std::ifstream f(path);
+  EXPECT_TRUE(f.good()) << "missing: " << path;
+  std::ostringstream ss;
+  ss << f.rdbuf();
+  return ss.str();
+}
+
+MeshSources ur5_meshes() {
+  return MeshSources{{{"example-robot-data", mesh_root() + "/example-robot-data"}}, ""};
 }
 
 // A closed axis-aligned cube mesh of the given half-size, centered at the origin.
@@ -143,6 +163,39 @@ TEST(FclBackend, ForceOptixUnavailableThrows) {
   const auto model = RobotModel::from_urdf(kSphereRobot);
   EXPECT_THROW(make_static_scene(model, SceneDescription{}, BackendHint::ForceOptix),
                std::runtime_error);
+}
+
+// ---- robot-link meshes (Task 2a.2b) ------------------------------------------------------------
+
+// A real fixture robot (UR5) whose collision geometry is all meshes resolves, loads, and collides
+// through the same FCL path as primitives.
+TEST(FclMeshLinks, Ur5MeshRobotVsEnvironment) {
+  const auto model = RobotModel::from_urdf(read_text(fixtures() + "/robots/ur5.urdf"));
+  const RobotInstance robot(model);
+  const JointPosition home = JointPosition::Zero(model->dof());
+
+  // A box enclosing the whole arm collides; the same box parked 100 m away does not.
+  QueryOptions opts;
+  opts.check_self_collision = false;
+
+  SceneDescription enclosing;
+  enclosing.objects.push_back({"cage", BoxShape{Eigen::Vector3d(2.0, 2.0, 2.0)}, at_x(0.0)});
+  const auto hit_scene = make_static_scene(model, enclosing, BackendHint::Auto, ur5_meshes());
+  const auto ws1 = hit_scene->make_workspace();
+  EXPECT_TRUE(hit_scene->query(robot, home, opts, *ws1).in_collision);
+
+  SceneDescription faraway;
+  faraway.objects.push_back({"box", BoxShape{Eigen::Vector3d(0.5, 0.5, 0.5)}, at_x(100.0)});
+  const auto clear_scene = make_static_scene(model, faraway, BackendHint::Auto, ur5_meshes());
+  const auto ws2 = clear_scene->make_workspace();
+  EXPECT_FALSE(clear_scene->query(robot, home, opts, *ws2).in_collision);
+}
+
+// A mesh robot built WITHOUT the means to resolve its mesh URIs fails loudly — never silently
+// skipped (which would make a real robot uncollidable).
+TEST(FclMeshLinks, MeshRobotWithoutSourcesThrows) {
+  const auto model = RobotModel::from_urdf(read_text(fixtures() + "/robots/ur5.urdf"));
+  EXPECT_THROW(make_static_scene(model, SceneDescription{}), std::runtime_error);
 }
 
 // ---- dynamic environment editing ---------------------------------------------------------------

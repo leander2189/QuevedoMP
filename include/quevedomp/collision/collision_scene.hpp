@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "quevedomp/collision/geometry.hpp"
@@ -50,10 +52,21 @@ public:
 
 enum class BackendHint { Auto, ForceCpuFcl, ForceOptix };
 
-// Build a scene over a static environment. The robot model is needed for FK + collision geometry.
-// (FCL backend lands in Task 2a.2; OptiX in Phase 2b.)
+// How to resolve a robot's URDF mesh collision URIs into loadable files. URDF references geometry
+// by URI (commonly `package://<pkg>/...`), and there is no global package index — the caller
+// supplies the {package name → directory} map (and an optional base dir for relative paths). A
+// robot whose collision geometry is all primitives needs none of this (leave it default). Mirrors
+// resolve_mesh_uri()'s parameters; see robot/mesh_resolver.hpp.
+struct MeshSources {
+  std::unordered_map<std::string, std::string> package_dirs;
+  std::string base_dir;
+};
+
+// Build a scene over a static environment. The robot model is needed for FK + collision geometry;
+// `meshes` resolves the robot's mesh collision links (Task 2a.2b). Throws if a robot mesh URI
+// cannot be resolved or loaded (it is never silently skipped). (OptiX backend: Phase 2b.)
 [[nodiscard]] std::unique_ptr<CollisionScene>
 make_static_scene(std::shared_ptr<const RobotModel> robot, const SceneDescription &environment,
-                  BackendHint hint = BackendHint::Auto);
+                  BackendHint hint = BackendHint::Auto, const MeshSources &meshes = {});
 
 } // namespace quevedomp::collision

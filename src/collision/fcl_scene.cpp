@@ -12,16 +12,17 @@
 //   * Per config: FK the robot (scene-internal FK), push transforms onto the workspace objects,
 //     test robot-vs-env, then robot-vs-self honoring the ACM.
 //
-// Limitation (documented, revisited with the high-poly fixtures in Task B.1 / 2a.6): a robot link
-// whose URDF collision element is a *mesh* is skipped here — RobotModel stores the mesh as an
-// unresolved URI (package://…), and wiring the resolver + package roots into the scene is out of
-// this task's scope. Primitive robot collision geometry (box/sphere/cylinder) is fully supported,
-// which is what Task 2a.2's closed-form verification exercises. Environment meshes ARE supported
-// (SceneDescription carries fully-populated quevedomp::Mesh vertices/triangles).
+// Mesh geometry (Task 2a.2b): environment meshes come fully-populated in SceneDescription; robot
+// mesh collision links carry only an unresolved URDF URI (package://…), so make_static_scene takes
+// a MeshSources {package→dir} map and the scene resolves (resolve_mesh_uri) + loads (load_mesh) +
+// scales them at build time, caching by URI+scale so a shared mesh loads once. A robot mesh that
+// cannot be resolved/loaded throws — it is never silently skipped. All geometry kinds (primitive
+// and mesh, robot and environment) then funnel through the identical FCL collide path.
 #include "quevedomp/collision/collision_scene.hpp"
 
 #include <cstdint>
 #include <stdexcept>
+#include <string>
 #include <unordered_map>
 #include <variant>
 
@@ -34,7 +35,9 @@
 #include <fcl/narrowphase/collision.h>
 #include <fcl/narrowphase/collision_object.h>
 
+#include "quevedomp/core/mesh_io.hpp"
 #include "quevedomp/kinematics/fk.hpp"
+#include "quevedomp/robot/mesh_resolver.hpp"
 
 namespace quevedomp::collision {
 namespace {
@@ -94,9 +97,18 @@ std::shared_ptr<FclGeom> make_link_geom(const CollisionGeometry &cg) {
   case GeometryType::Cylinder:
     return std::make_shared<fcl::Cylinder<S>>(cg.cylinder_radius, cg.cylinder_length);
   case GeometryType::Mesh:
-    return nullptr; // deferred — see file header limitation note
+    return nullptr; // resolved+loaded by FclScene (needs MeshSources); see robot_mesh_geom
   }
   return nullptr;
+}
+
+// Scale a loaded mesh's vertices in place by the URDF <mesh scale>. Non-uniform scale cannot be
+// baked into the rigid object transform, so it is applied to the geometry here.
+void apply_scale(Mesh &m, const Eigen::Vector3d &scale) {
+  if (scale == Eigen::Vector3d::Ones())
+    return;
+  for (Eigen::Vector3d &v : m.vertices)
+    v = v.cwiseProduct(scale);
 }
 
 // One posed robot collision shape: which link drives it, its shared geometry, and the fixed
@@ -142,12 +154,16 @@ class FclWorkspace; // fwd
 
 class FclScene final : public CollisionScene {
 public:
-  explicit FclScene(std::shared_ptr<const RobotModel> model) : model_(std::move(model)) {
-    // Build the immutable per-link collision shape templates once.
+  FclScene(std::shared_ptr<const RobotModel> model, MeshSources sources)
+      : model_(std::move(model)), sources_(std::move(sources)) {
+    // Build the immutable per-link collision shape templates once. Primitives are built inline;
+    // mesh links are resolved+loaded here (throws on failure — never silently skipped).
     const auto &links = model_->links();
     for (int li = 0; li < static_cast<int>(links.size()); ++li) {
       for (const CollisionGeometry &cg : links[li].collisions) {
-        if (auto geom = make_link_geom(cg))
+        std::shared_ptr<FclGeom> geom =
+            cg.type == GeometryType::Mesh ? robot_mesh_geom(cg) : make_link_geom(cg);
+        if (geom)
           link_shapes_.push_back({li, std::move(geom), cg.origin});
       }
     }
@@ -190,7 +206,26 @@ public:
 private:
   friend class FclWorkspace;
 
+  // Resolve + load + scale a robot mesh collision link into FCL geometry, caching by URI+scale so
+  // a mesh shared across links loads once. Throws (via resolve_mesh_uri/load_mesh) on failure.
+  std::shared_ptr<FclGeom> robot_mesh_geom(const CollisionGeometry &cg) {
+    const std::string path =
+        resolve_mesh_uri(cg.mesh_filename, sources_.package_dirs, sources_.base_dir);
+    const std::string key = path + '|' + std::to_string(cg.mesh_scale.x()) + ',' +
+                            std::to_string(cg.mesh_scale.y()) + ',' +
+                            std::to_string(cg.mesh_scale.z());
+    if (const auto it = mesh_cache_.find(key); it != mesh_cache_.end())
+      return it->second;
+    Mesh m = load_mesh(path);
+    apply_scale(m, cg.mesh_scale);
+    auto geom = make_bvh(m);
+    mesh_cache_.emplace(key, geom);
+    return geom;
+  }
+
   std::shared_ptr<const RobotModel> model_;
+  MeshSources sources_;
+  std::unordered_map<std::string, std::shared_ptr<FclGeom>> mesh_cache_;
   std::vector<LinkShape> link_shapes_;
   std::unordered_map<SceneHandle, std::unique_ptr<FclObject>> env_objects_;
   mutable FclManager env_manager_; // broad-phase queries are logically const
@@ -258,12 +293,12 @@ BatchResult FclScene::query_batch(const RobotInstance &robot, std::span<const Jo
 
 std::unique_ptr<CollisionScene> make_static_scene(std::shared_ptr<const RobotModel> robot,
                                                   const SceneDescription &environment,
-                                                  BackendHint hint) {
+                                                  BackendHint hint, const MeshSources &meshes) {
   if (hint == BackendHint::ForceOptix)
     throw std::runtime_error(
         "make_static_scene: OptiX backend not built (lands in Phase 2b); use Auto or ForceCpuFcl");
 
-  auto scene = std::make_unique<FclScene>(std::move(robot));
+  auto scene = std::make_unique<FclScene>(std::move(robot), meshes);
   for (const SceneObject &o : environment.objects)
     scene->add_object(o.id, o.geometry, o.pose);
   return scene;
