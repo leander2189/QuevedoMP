@@ -21,6 +21,7 @@
 #include "quevedomp/collision/collision_scene.hpp"
 
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -34,6 +35,7 @@
 #include <fcl/geometry/shape/sphere.h>
 #include <fcl/narrowphase/collision.h>
 #include <fcl/narrowphase/collision_object.h>
+#include <fcl/narrowphase/distance.h>
 
 #include "quevedomp/core/mesh_io.hpp"
 #include "quevedomp/kinematics/fk.hpp"
@@ -119,6 +121,12 @@ struct LinkShape {
   Transform origin;
 };
 
+// A static environment object: its FCL object plus the caller-supplied id (used as a witness id).
+struct EnvObj {
+  std::unique_ptr<FclObject> obj;
+  std::string id;
+};
+
 // Self-collision broad-phase callback context. Robot CollisionObjects carry their link index as
 // user data; we skip same-link geometry pairs and ACM-allowed pairs, then narrow-phase the rest.
 struct SelfData {
@@ -150,6 +158,40 @@ bool self_callback(FclObject *o1, FclObject *o2, void *cdata) {
   return false;
 }
 
+// Signed distance + witness for one object pair (§4.3): positive = separation with the nearest
+// points; negative = penetration depth with the contact point; ~0 = touching. FCL computes exact
+// separation via distance(); penetration depth (which distance() does not give for meshes) comes
+// from collide() with contacts.
+struct PairDist {
+  double signed_distance = 0.0;
+  Eigen::Vector3d point_a = Eigen::Vector3d::Zero();
+  Eigen::Vector3d point_b = Eigen::Vector3d::Zero();
+};
+
+PairDist narrow_distance(FclObject *o1, FclObject *o2) {
+  // Overlap/penetration first, via contact-enabled collide. This deliberately avoids FCL's
+  // enable_signed_distance path (GJK/EPA), which aborts on a degenerate simplex at exact contact.
+  fcl::CollisionRequest<S> creq;
+  creq.num_max_contacts = 1;
+  creq.enable_contact = true;
+  fcl::CollisionResult<S> cres;
+  fcl::collide(o1, o2, creq, cres);
+  if (cres.isCollision()) {
+    if (cres.numContacts() > 0) {
+      const auto &c = cres.getContact(0);
+      return {-c.penetration_depth, c.pos, c.pos};
+    }
+    return {0.0, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero()};
+  }
+
+  // Separated: plain (unsigned) distance + nearest points. Non-negative by construction.
+  fcl::DistanceRequest<S> dreq;
+  dreq.enable_nearest_points = true;
+  fcl::DistanceResult<S> dres;
+  const double d = fcl::distance(o1, o2, dreq, dres);
+  return {d, dres.nearest_points[0], dres.nearest_points[1]};
+}
+
 class FclWorkspace; // fwd
 
 class FclScene final : public CollisionScene {
@@ -169,12 +211,12 @@ public:
     }
   }
 
-  SceneHandle add_object(std::string /*id*/, const Geometry &geom, const Transform &pose) override {
+  SceneHandle add_object(std::string id, const Geometry &geom, const Transform &pose) override {
     const SceneHandle handle = next_handle_++;
     auto obj = std::make_unique<FclObject>(make_env_geom(geom), to_fcl(pose));
     obj->computeAABB();
     env_manager_.registerObject(obj.get());
-    env_objects_.emplace(handle, std::move(obj));
+    env_objects_.emplace(handle, EnvObj{std::move(obj), std::move(id)});
     env_manager_.update();
     return handle;
   }
@@ -183,7 +225,7 @@ public:
     const auto it = env_objects_.find(handle);
     if (it == env_objects_.end())
       return;
-    env_manager_.unregisterObject(it->second.get());
+    env_manager_.unregisterObject(it->second.obj.get());
     env_objects_.erase(it);
     env_manager_.update();
   }
@@ -192,8 +234,8 @@ public:
     const auto it = env_objects_.find(handle);
     if (it == env_objects_.end())
       return;
-    it->second->setTransform(to_fcl(pose));
-    it->second->computeAABB();
+    it->second.obj->setTransform(to_fcl(pose));
+    it->second.obj->computeAABB();
     env_manager_.update();
   }
 
@@ -205,6 +247,15 @@ public:
 
 private:
   friend class FclWorkspace;
+
+  struct DistEval {
+    double signed_distance = 0.0;
+    CollisionPair witness;
+  };
+
+  bool boolean_query(const RobotInstance &robot, FclWorkspace &fws, const QueryOptions &opts) const;
+  DistEval distance_query(const RobotInstance &robot, FclWorkspace &fws,
+                          const QueryOptions &opts) const;
 
   // Resolve + load + scale a robot mesh collision link into FCL geometry, caching by URI+scale so
   // a mesh shared across links loads once. Throws (via resolve_mesh_uri/load_mesh) on failure.
@@ -227,7 +278,7 @@ private:
   MeshSources sources_;
   std::unordered_map<std::string, std::shared_ptr<FclGeom>> mesh_cache_;
   std::vector<LinkShape> link_shapes_;
-  std::unordered_map<SceneHandle, std::unique_ptr<FclObject>> env_objects_;
+  std::unordered_map<SceneHandle, EnvObj> env_objects_;
   mutable FclManager env_manager_; // broad-phase queries are logically const
   SceneHandle next_handle_ = 0;
 };
@@ -255,17 +306,86 @@ std::unique_ptr<Workspace> FclScene::make_workspace() const {
   return std::make_unique<FclWorkspace>(*this);
 }
 
+// Fast boolean path (the RRT hot path): broad-phase robot-vs-env with early-out, then robot-vs-self
+// honoring the ACM. Returns true on first overlap. Used when neither distance nor a safety margin
+// is requested.
+bool FclScene::boolean_query(const RobotInstance &robot, FclWorkspace &fws,
+                             const QueryOptions &opts) const {
+  if (!env_objects_.empty()) {
+    fcl::DefaultCollisionData<S> data;
+    fws.manager_.collide(&env_manager_, &data, fcl::DefaultCollisionFunction<S>);
+    if (data.result.isCollision())
+      return true;
+  }
+  if (opts.check_self_collision) {
+    SelfData sd{&robot.model(), &robot.acm(), false};
+    fws.manager_.collide(&sd, self_callback);
+    return sd.collision;
+  }
+  return false;
+}
+
+// Signed-distance path (§4.3): exact pairwise robot-vs-env + robot-vs-self (honoring the ACM),
+// tracking the minimum signed distance and its witness (nearest pair when free, deepest when
+// colliding). robot_padding inflates robot geometry (offsets the signed distance: once for a
+// robot-env pair, twice for a robot-robot pair). FCL is authoritative here; it is slower than the
+// boolean broad-phase, which is why it runs only when distance or a safety margin is requested.
+FclScene::DistEval FclScene::distance_query(const RobotInstance &robot, FclWorkspace &fws,
+                                            const QueryOptions &opts) const {
+  const RobotModel &model = robot.model();
+  const double pad = opts.robot_padding;
+
+  DistEval best;
+  best.signed_distance = std::numeric_limits<double>::infinity();
+
+  for (std::size_t s = 0; s < link_shapes_.size(); ++s) {
+    const std::string &la = model.links()[link_shapes_[s].link_index].name;
+    for (const auto &[handle, eo] : env_objects_) {
+      const PairDist pd = narrow_distance(fws.objects_[s].get(), eo.obj.get());
+      const double sd = pd.signed_distance - pad;
+      if (sd < best.signed_distance)
+        best = {sd, {la, eo.id, pd.point_a, pd.point_b}};
+    }
+  }
+
+  if (opts.check_self_collision) {
+    for (std::size_t a = 0; a < link_shapes_.size(); ++a) {
+      for (std::size_t b = a + 1; b < link_shapes_.size(); ++b) {
+        const int lia = link_shapes_[a].link_index;
+        const int lib = link_shapes_[b].link_index;
+        if (lia == lib)
+          continue;
+        const std::string &na = model.links()[lia].name;
+        const std::string &nb = model.links()[lib].name;
+        if (robot.acm().is_allowed(na, nb))
+          continue;
+        const PairDist pd = narrow_distance(fws.objects_[a].get(), fws.objects_[b].get());
+        const double sd = pd.signed_distance - 2.0 * pad;
+        if (sd < best.signed_distance)
+          best = {sd, {na, nb, pd.point_a, pd.point_b}};
+      }
+    }
+  }
+  return best;
+}
+
 BatchResult FclScene::query_batch(const RobotInstance &robot, std::span<const JointPosition> qs,
                                   const QueryOptions &opts, Workspace &ws) const {
   auto &fws = dynamic_cast<FclWorkspace &>(ws);
   const RobotModel &model = robot.model();
 
+  const bool want_distance = opts.distance;
+  const bool need_distance = want_distance || opts.safety_margin > 0.0f;
+
   BatchResult out;
   out.in_collision.assign(qs.size(), 0);
+  if (want_distance) {
+    out.min_distance.assign(qs.size(), 0.0f);
+    out.witnesses.assign(qs.size(), {});
+  }
 
   for (std::size_t i = 0; i < qs.size(); ++i) {
     const std::vector<Transform> link_poses = fk_all(model, qs[i]);
-
     for (std::size_t s = 0; s < link_shapes_.size(); ++s) {
       const LinkShape &ls = link_shapes_[s];
       fws.objects_[s]->setTransform(to_fcl(link_poses[ls.link_index] * ls.origin));
@@ -273,18 +393,20 @@ BatchResult FclScene::query_batch(const RobotInstance &robot, std::span<const Jo
     }
     fws.manager_.update();
 
-    bool hit = false;
-    if (!env_objects_.empty()) {
-      fcl::DefaultCollisionData<S> data;
-      fws.manager_.collide(&env_manager_, &data, fcl::DefaultCollisionFunction<S>);
-      hit = data.result.isCollision();
+    if (!need_distance) {
+      out.in_collision[i] = boolean_query(robot, fws, opts) ? 1 : 0;
+      continue;
     }
-    if (!hit && opts.check_self_collision) {
-      SelfData sd{&model, &robot.acm(), false};
-      fws.manager_.collide(&sd, self_callback);
-      hit = sd.collision;
+
+    const DistEval e = distance_query(robot, fws, opts);
+    out.in_collision[i] = (e.signed_distance < opts.safety_margin) ? 1 : 0;
+    if (want_distance) {
+      const double clamped = e.signed_distance > opts.max_distance
+                                 ? static_cast<double>(opts.max_distance)
+                                 : e.signed_distance;
+      out.min_distance[i] = static_cast<float>(clamped);
+      out.witnesses[i] = e.witness;
     }
-    out.in_collision[i] = hit ? 1 : 0;
   }
   return out;
 }

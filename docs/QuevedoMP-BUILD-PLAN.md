@@ -512,9 +512,22 @@ Options (user decision — changes global WSL behavior):
   enclosing box and clears a far one; a mesh robot built without `MeshSources` throws.
   `tests/unit/test_collision_fcl.cpp` (`FclMeshLinks.*`). dev-cpu 94/94, dev-gpu 95/95.
 
-### Task 2a.3 — FCL distance + witness
-- Signed min-distance, clamp at `max_distance`, witness pairs (§4.3 semantics).
-- **Verify:** property-based symmetry, non-negativity of separation, sign correctness at known penetration.
+### Task 2a.3 — FCL distance + witness ✅ (2026-06-30)
+- Signed min-distance, clamp at `max_distance`, witness pairs (§4.3 semantics). `opts.distance`
+  populates `BatchResult.min_distance` + `witnesses`; `safety_margin > 0` forces the distance
+  computation to gate the boolean (collision if signed distance < margin) **without** emitting
+  distance output. `robot_padding` offsets the signed distance (×1 robot-env, ×2 robot-self).
+- **Pairwise** exact robot-vs-env + robot-vs-self (honoring ACM), tracking min signed distance +
+  witness (nearest pair when free, deepest when colliding). Runs only when distance/margin is
+  requested; the boolean broad-phase remains the RRT hot path.
+- **Verify:** ✅ separation = exact gap + witness on both surfaces; penetration sign/depth; touching
+  ≈ 0; clamp at `max_distance`; `robot_padding` offset; `safety_margin` gates boolean with no
+  distance output. `tests/unit/test_collision_fcl.cpp` (`FclDistance.*`).
+- **Robustness:** `narrow_distance` avoids FCL's `enable_signed_distance` (GJK/EPA) path, which
+  **aborts on a degenerate simplex at exact contact** — uses contact-enabled `collide` for the
+  overlap/depth side and plain unsigned `distance` for separation. dev-cpu 100/100, dev-gpu 101/101.
+- **Deferred:** `per_pair_padding` (PaddingMap override) is accepted in QueryOptions but not yet
+  honored — wired when planning needs per-pair tuning.
 
 ### Task 2a.4 — `check_edge`
 - Discretize q0→q1 at `resolution`, batch-check, return `first_contact_t`.

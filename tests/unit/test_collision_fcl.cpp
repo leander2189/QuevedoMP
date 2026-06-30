@@ -48,17 +48,22 @@ const char *kPrismaticRobot = R"(<robot name="arm">
 
 Transform at_x(double x) { return Transform::from_translation(Eigen::Vector3d(x, 0.0, 0.0)); }
 
-// Returns boolean collision of the (DOF-free) robot against a single-object environment.
-bool collide_env(const char *robot_urdf, const Geometry &env_geom, const Transform &env_pose) {
+// Full query result of the (DOF-free) robot against a single-object environment "obj".
+CollisionResult query_env(const char *robot_urdf, const Geometry &env_geom,
+                          const Transform &env_pose, QueryOptions opts) {
   const auto model = RobotModel::from_urdf(robot_urdf);
   const RobotInstance robot(model);
   SceneDescription env;
   env.objects.push_back({"obj", env_geom, env_pose});
   const auto scene = make_static_scene(model, env);
   const auto ws = scene->make_workspace();
-  QueryOptions opts;
   opts.check_self_collision = false;
-  return scene->query(robot, JointPosition(), opts, *ws).in_collision;
+  return scene->query(robot, JointPosition(), opts, *ws);
+}
+
+// Returns boolean collision of the (DOF-free) robot against a single-object environment.
+bool collide_env(const char *robot_urdf, const Geometry &env_geom, const Transform &env_pose) {
+  return query_env(robot_urdf, env_geom, env_pose, QueryOptions{}).in_collision;
 }
 
 // ---- fixture-robot (real meshes) helpers -------------------------------------------------------
@@ -112,6 +117,69 @@ TEST(FclBackend, BoxBox) {
 TEST(FclBackend, EnvironmentMesh) {
   EXPECT_TRUE(collide_env(kSphereRobot, box_mesh(0.1), at_x(0.55)));
   EXPECT_FALSE(collide_env(kSphereRobot, box_mesh(0.1), at_x(0.70)));
+}
+
+// ---- signed distance + witness (Task 2a.3) -----------------------------------------------------
+
+namespace {
+QueryOptions dist_opts(float max_distance = 10.0f) {
+  QueryOptions o;
+  o.distance = true;
+  o.max_distance = max_distance; // wide, so the true gap is reported (not clamped)
+  return o;
+}
+} // namespace
+
+// Sphere robot (r=0.5) at the origin vs an env sphere (r=0.5): separation = gap, witness on the two
+// surfaces along +x.
+TEST(FclDistance, Separation) {
+  const auto r = query_env(kSphereRobot, SphereShape{0.5}, at_x(1.5), dist_opts());
+  EXPECT_FALSE(r.in_collision);
+  EXPECT_NEAR(r.min_distance, 0.5, 1e-3); // 1.5 - (0.5+0.5)
+  ASSERT_TRUE(r.witness.has_value());
+  EXPECT_NEAR(r.witness->point_a.x(), 0.5, 1e-3); // robot surface
+  EXPECT_NEAR(r.witness->point_b.x(), 1.0, 1e-3); // env surface
+  EXPECT_EQ(r.witness->a, "base");
+  EXPECT_EQ(r.witness->b, "obj");
+}
+
+TEST(FclDistance, Penetration) {
+  const auto r = query_env(kSphereRobot, SphereShape{0.5}, at_x(0.8), dist_opts());
+  EXPECT_TRUE(r.in_collision);
+  EXPECT_NEAR(r.min_distance, -0.2, 1e-2); // depth = (0.5+0.5) - 0.8
+}
+
+TEST(FclDistance, TouchingIsApproxZero) {
+  const auto r = query_env(kSphereRobot, SphereShape{0.5}, at_x(1.0), dist_opts());
+  EXPECT_NEAR(r.min_distance, 0.0, 1e-3);
+}
+
+TEST(FclDistance, ClampedAtMaxDistance) {
+  QueryOptions o;
+  o.distance = true; // default max_distance = 0.10
+  const auto r = query_env(kSphereRobot, SphereShape{0.5}, at_x(1.5), o);
+  EXPECT_FLOAT_EQ(r.min_distance, 0.10f); // true gap 0.5 clamped to max_distance
+}
+
+TEST(FclDistance, RobotPaddingOffsetsDistance) {
+  QueryOptions o = dist_opts();
+  o.robot_padding = 0.1f;
+  const auto r = query_env(kSphereRobot, SphereShape{0.5}, at_x(1.5), o);
+  EXPECT_NEAR(r.min_distance, 0.4, 1e-3); // 0.5 gap - 0.1 padding
+}
+
+// safety_margin makes a (physically clear) near-miss count as a collision — and forces the
+// distance computation even though distance output was not requested (so it stays empty).
+TEST(FclDistance, SafetyMarginGatesBooleanWithoutDistanceOutput) {
+  QueryOptions clear;
+  EXPECT_FALSE(query_env(kSphereRobot, SphereShape{0.5}, at_x(1.3), clear).in_collision);
+
+  QueryOptions margin;
+  margin.safety_margin = 0.4f; // gap is 0.3 < 0.4 -> "in collision"
+  const auto r = query_env(kSphereRobot, SphereShape{0.5}, at_x(1.3), margin);
+  EXPECT_TRUE(r.in_collision);
+  EXPECT_FALSE(r.witness.has_value());   // distance output not requested
+  EXPECT_FLOAT_EQ(r.min_distance, 0.0f); // unset
 }
 
 // ---- robot-vs-self + ACM -----------------------------------------------------------------------
