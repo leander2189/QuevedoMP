@@ -228,7 +228,12 @@ TEST(FclBackend, BatchMixedResults) {
 
 // ---- backend selection -------------------------------------------------------------------------
 
-TEST(FclBackend, ForceOptixUnavailableThrows) {
+TEST(FclBackend, ForceOptixThrowsWhenUnavailable) {
+  // When OptiX is present, actually constructing a GPU scene needs CUDA (and the ASan shadow-gap
+  // suppression) — that path is covered by test_optix_backend. Here we only assert the CPU-build
+  // contract: ForceOptix throws when the backend isn't compiled in.
+  if (optix_available())
+    GTEST_SKIP() << "OptiX backend present; construction is covered by test_optix_backend";
   const auto model = RobotModel::from_urdf(kSphereRobot);
   EXPECT_THROW(make_static_scene(model, SceneDescription{}, BackendHint::ForceOptix),
                std::runtime_error);

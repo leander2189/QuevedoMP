@@ -133,7 +133,8 @@ if(QUEVEDOMP_WITH_OPTIX)
   target_compile_options(quevedomp_optix_ptx
     PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>)
 
-  target_sources(quevedomp PRIVATE src/collision/optix/optix_pipeline.cpp)
+  target_sources(quevedomp PRIVATE src/collision/optix/optix_pipeline.cpp
+                                   src/collision/optix/optix_scene.cpp)
   add_dependencies(quevedomp quevedomp_optix_ptx)
   target_include_directories(quevedomp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/collision/optix)
   target_link_libraries(quevedomp PRIVATE OptiX::OptiX CUDA::cudart)

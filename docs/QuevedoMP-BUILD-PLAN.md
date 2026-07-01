@@ -602,7 +602,25 @@ Options (user decision — changes global WSL behavior):
   the GPU-OptiX path. Flipping `dev-gpu`/`release` ON is deferred to **Phase 2b exit**, once the
   OptiX backend is stable, so it becomes continuously tested for the shipping build.
 
-### Task 2b.1 — OptiX backend (amendment M4 — batched-raygen design, NOT per-config IAS)
+### Task 2b.1 — OptiX backend (amendment M4 — batched-raygen design, NOT per-config IAS) 🟡 boolean core DONE (2026-06-30)
+> **Status:** the minimal-boolean backend (user-chosen first pass) is implemented and **agrees with
+> FCL** config-for-config on a real mesh robot. Built incrementally, each step verified on GPU:
+> PTX pipeline scaffold (`52e3fad`) → env GAS + trace (`35ee42e`) → batched transformed rays +
+> atomicOr (`3fd0d37`) → the `OptixScene` (this commit). Files: `src/collision/optix/*`
+> (`optix_programs.cu`, `launch_params.hpp`, `optix_pipeline.cpp`, `optix_scene.cpp`).
+> - **Done:** env GAS over Box/Mesh objects (built once); per-link **triangle-edge** test rays in
+>   link-local frame (SoA on device); per `query_batch` one host-FK'd transform block → **one 2D
+>   launch** `(ray, config)` transforming each ray on the fly, trace terminate-on-first-hit,
+>   `atomicOr` per config; **self-collision on CPU via an internal FCL scene** (ADR-014 item 4);
+>   wired behind `make_static_scene(ForceOptix)` + `optix_available()`. Verify: `test_optix_backend`
+>   — device toolchain self-test, primitive/empty degenerate build, and **OptiX==FCL** over a
+>   shoulder sweep into a thin-slab obstacle (surface crossings; both collisions and frees present).
+>   dev-optix all green; dev-cpu unaffected (113/113).
+> - **Deferred (follow-ups within 2b.1 before Phase 2b exit):** ADR-012 parity-ray **containment**
+>   (v0 detects surface crossings only — a link fully inside a mesh with no edge crossing is missed);
+>   ADR-013 **margins/padding**; **distance/witness** (throws — FCL-authoritative per §4.5);
+>   **sphere/cylinder env tessellation**; **dynamic** add/move/remove (static v0); **persistent/grown
+>   workspace buffers** (currently per-call alloc) + pinned staging + explicit stream.
 > **Supersedes spec §4.5's "write IAS transforms → refit → launch per config" loop.** That
 > design puts an AS update + kernel launch + PCIe round-trip inside RRT's *serial* edge
 > loop — the classic GPU-planner failure mode. The replacement exploits exactly what the

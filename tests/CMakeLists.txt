@@ -95,6 +95,8 @@ gtest_discover_tests(test_collision_viz)
 if(QUEVEDOMP_WITH_OPTIX)
   add_executable(test_optix_backend unit/test_optix_backend.cpp)
   target_link_libraries(test_optix_backend PRIVATE quevedomp::quevedomp GTest::gtest_main)
+  target_compile_definitions(test_optix_backend
+    PRIVATE QUEVEDOMP_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
   gtest_discover_tests(test_optix_backend PROPERTIES
     ENVIRONMENT "ASAN_OPTIONS=protect_shadow_gap=0:detect_leaks=0")
 endif()

@@ -64,9 +64,14 @@ struct MeshSources {
 
 // Build a scene over a static environment. The robot model is needed for FK + collision geometry;
 // `meshes` resolves the robot's mesh collision links (Task 2a.2b). Throws if a robot mesh URI
-// cannot be resolved or loaded (it is never silently skipped). (OptiX backend: Phase 2b.)
+// cannot be resolved or loaded (it is never silently skipped). `BackendHint::ForceOptix` builds the
+// GPU backend when this build includes it (see optix_available()), else throws.
 [[nodiscard]] std::unique_ptr<CollisionScene>
 make_static_scene(std::shared_ptr<const RobotModel> robot, const SceneDescription &environment,
                   BackendHint hint = BackendHint::Auto, const MeshSources &meshes = {});
+
+// True if this build includes the OptiX GPU backend (Phase 2b). When false,
+// make_static_scene(ForceOptix) throws.
+bool optix_available() noexcept;
 
 } // namespace quevedomp::collision

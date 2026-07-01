@@ -413,12 +413,32 @@ BatchResult FclScene::query_batch(const RobotInstance &robot, std::span<const Jo
 
 } // namespace
 
+#ifdef QUEVEDOMP_WITH_OPTIX
+// Defined in src/collision/optix/optix_scene.cpp (only compiled with the OptiX backend).
+std::unique_ptr<CollisionScene> make_optix_scene(std::shared_ptr<const RobotModel> robot,
+                                                 const SceneDescription &environment,
+                                                 const MeshSources &meshes);
+#endif
+
+bool optix_available() noexcept {
+#ifdef QUEVEDOMP_WITH_OPTIX
+  return true;
+#else
+  return false;
+#endif
+}
+
 std::unique_ptr<CollisionScene> make_static_scene(std::shared_ptr<const RobotModel> robot,
                                                   const SceneDescription &environment,
                                                   BackendHint hint, const MeshSources &meshes) {
-  if (hint == BackendHint::ForceOptix)
-    throw std::runtime_error(
-        "make_static_scene: OptiX backend not built (lands in Phase 2b); use Auto or ForceCpuFcl");
+  if (hint == BackendHint::ForceOptix) {
+#ifdef QUEVEDOMP_WITH_OPTIX
+    return make_optix_scene(std::move(robot), environment, meshes);
+#else
+    throw std::runtime_error("make_static_scene: OptiX backend not built (this is a CPU build); "
+                             "use Auto or ForceCpuFcl");
+#endif
+  }
 
   auto scene = std::make_unique<FclScene>(std::move(robot), meshes);
   for (const SceneObject &o : environment.objects)
