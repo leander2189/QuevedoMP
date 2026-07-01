@@ -7,11 +7,15 @@
 // into the config's result. Robot-vs-self runs on the CPU via an internal FCL scene (ADR-014
 // item 4), OR'd into the same booleans.
 //
+// Containment (ADR-012): surface rays miss a link fully inside an obstacle, so a per-link parity-ray
+// check (shared EnvContainment, CPU) runs alongside — analytic inside-tests for primitive solids,
+// parity rays for watertight meshes.
+//
 // v0 scope (minimal boolean, per the build-plan decision): boolean only (opts.distance unsupported
-// -> throws; exact distance stays with FCL per spec §4.5); environment geometry is Box or Mesh
-// (sphere/cylinder tessellation is a follow-up); robot rays come from MESH collision links (edge
-// rays detect surface crossings — full containment is ADR-012's parity ray, deferred). The scene
-// is static (build via make_static_scene; no post-build add/move/remove yet).
+// -> throws; exact distance stays with FCL per spec §4.5); environment GAS geometry is Box or Mesh
+// (sphere/cylinder GAS tessellation is a follow-up; note containment still handles them analytically
+// on the CPU); robot rays come from MESH collision links. The scene is static (build via
+// make_static_scene; no post-build add/move/remove yet).
 #include <cstdint>
 #include <fstream>
 #include <map>
@@ -34,6 +38,7 @@
 #include "quevedomp/kinematics/fk.hpp"
 #include "quevedomp/robot/mesh_resolver.hpp"
 
+#include "../containment.hpp"
 #include "launch_params.hpp"
 
 namespace quevedomp::collision {
@@ -140,6 +145,7 @@ public:
     build_context_and_pipeline();
     build_environment_gas(env);
     build_robot_rays(meshes);
+    containment_ = EnvContainment(env); // ADR-012 parity-ray containment (surface rays miss it)
     // Internal FCL scene (empty environment) for robot-vs-self collision on the CPU.
     fcl_self_ = make_static_scene(model_, SceneDescription{}, BackendHint::ForceCpuFcl, meshes);
   }
@@ -235,6 +241,21 @@ public:
       const BatchResult self = fcl_self_->query_batch(robot, qs, self_opts, *ows.fcl_ws_);
       for (std::size_t c = 0; c < n && c < self.in_collision.size(); ++c)
         result[c] = (result[c] || self.in_collision[c]) ? 1 : 0;
+    }
+
+    // ---- CPU containment (ADR-012): a link fully inside an obstacle casts no surface ray ----
+    if (containment_.any() && !link_interior_.empty()) {
+      for (std::size_t c = 0; c < n; ++c) {
+        if (result[c])
+          continue;
+        const std::vector<Transform> poses = fk_all(model, qs[c]);
+        for (const auto &[li, p] : link_interior_) {
+          if (containment_.inside(poses[li] * p)) {
+            result[c] = 1;
+            break;
+          }
+        }
+      }
     }
 
     BatchResult out;
@@ -378,6 +399,7 @@ private:
         lv.reserve(m.vertices.size());
         for (const Eigen::Vector3d &v : m.vertices)
           lv.push_back(cg.origin * v.cwiseProduct(cg.mesh_scale));
+        link_interior_.push_back({li, mesh_centroid(lv)}); // ADR-012 interior point (link frame)
         const int slot = static_cast<int>(ray_link_slots_.size());
         std::map<std::pair<int, int>, char> seen; // dedup shared edges within this mesh
         auto add_edge = [&](int a, int b) {
@@ -431,6 +453,10 @@ private:
   DeviceBuffer d_ray_origin_, d_ray_dir_, d_ray_len_, d_ray_link_;
   unsigned num_rays_ = 0;
   std::vector<int> ray_link_slots_; // slot -> model link index
+
+  EnvContainment containment_;
+  std::vector<std::pair<int, Eigen::Vector3d>>
+      link_interior_; // (link index, interior pt, link frame)
 };
 
 } // namespace

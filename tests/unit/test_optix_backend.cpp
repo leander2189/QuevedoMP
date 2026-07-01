@@ -43,6 +43,18 @@ MeshSources ur5_meshes() {
                      ""};
 }
 
+// A closed (watertight) axis-aligned cube mesh of the given half-size, centered at the origin.
+Mesh box_mesh(double h) {
+  Mesh m;
+  for (int i = 0; i < 8; ++i)
+    m.vertices.emplace_back(i & 1 ? h : -h, i & 2 ? h : -h, i & 4 ? h : -h);
+  const int f[12][3] = {{0, 1, 3}, {0, 3, 2}, {4, 6, 7}, {4, 7, 5}, {0, 4, 5}, {0, 5, 1},
+                        {2, 3, 7}, {2, 7, 6}, {0, 2, 6}, {0, 6, 4}, {1, 5, 7}, {1, 7, 3}};
+  for (const auto &t : f)
+    m.triangles.emplace_back(t[0], t[1], t[2]);
+  return m;
+}
+
 } // namespace
 
 TEST(OptixBackend, DeviceToolchainSelfTest) {
@@ -114,4 +126,25 @@ TEST(OptixBackend, AgreesWithFclOnSurfaceCrossing) {
   EXPECT_EQ(agree, static_cast<int>(qs.size())); // full agreement
   EXPECT_GT(collisions, 0) << "obstacle never engaged — test is trivial";
   EXPECT_GT(frees, 0) << "obstacle always engaged — test is trivial";
+}
+
+// ADR-012 containment: a robot fully inside a watertight mesh casts no surface ray that hits, so
+// the parity-ray check (CPU, shared with FCL) is what flags it.
+TEST(OptixBackend, ContainmentInsideWatertightMesh) {
+  const auto model = RobotModel::from_urdf(read_text(fixtures() + "/robots/ur5.urdf"));
+  const RobotInstance robot(model);
+  const JointPosition home = JointPosition::Zero(static_cast<int>(model->dof()));
+  QueryOptions opts;
+  opts.check_self_collision = false;
+
+  SceneDescription cage;
+  cage.objects.push_back({"cage", box_mesh(2.0), Transform::Identity()});
+  const auto in = make_static_scene(model, cage, BackendHint::ForceOptix, ur5_meshes());
+  EXPECT_TRUE(in->query(robot, home, opts, *in->make_workspace()).in_collision);
+
+  SceneDescription far;
+  far.objects.push_back(
+      {"pebble", box_mesh(0.05), Transform::from_translation(Eigen::Vector3d(5, 0, 0))});
+  const auto out = make_static_scene(model, far, BackendHint::ForceOptix, ur5_meshes());
+  EXPECT_FALSE(out->query(robot, home, opts, *out->make_workspace()).in_collision);
 }

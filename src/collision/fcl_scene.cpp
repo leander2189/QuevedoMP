@@ -25,7 +25,9 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <variant>
+#include <vector>
 
 #include <fcl/broadphase/broadphase_dynamic_AABB_tree.h>
 #include <fcl/broadphase/default_broadphase_callbacks.h>
@@ -40,6 +42,8 @@
 #include "quevedomp/core/mesh_io.hpp"
 #include "quevedomp/kinematics/fk.hpp"
 #include "quevedomp/robot/mesh_resolver.hpp"
+
+#include "containment.hpp"
 
 namespace quevedomp::collision {
 namespace {
@@ -203,8 +207,15 @@ public:
     const auto &links = model_->links();
     for (int li = 0; li < static_cast<int>(links.size()); ++li) {
       for (const CollisionGeometry &cg : links[li].collisions) {
-        std::shared_ptr<FclGeom> geom =
-            cg.type == GeometryType::Mesh ? robot_mesh_geom(cg) : make_link_geom(cg);
+        std::shared_ptr<FclGeom> geom;
+        if (cg.type == GeometryType::Mesh) {
+          const MeshEntry e = robot_mesh_geom(cg);
+          geom = e.geom;
+          // ADR-012 interior point (link frame): FCL BVH mesh-mesh also misses containment.
+          link_interior_.push_back({li, cg.origin * e.centroid});
+        } else {
+          geom = make_link_geom(cg);
+        }
         if (geom)
           link_shapes_.push_back({li, std::move(geom), cg.origin});
       }
@@ -216,8 +227,10 @@ public:
     auto obj = std::make_unique<FclObject>(make_env_geom(geom), to_fcl(pose));
     obj->computeAABB();
     env_manager_.registerObject(obj.get());
+    env_recipe_.emplace(handle, SceneObject{id, geom, pose}); // for ADR-012 containment
     env_objects_.emplace(handle, EnvObj{std::move(obj), std::move(id)});
     env_manager_.update();
+    containment_dirty_ = true;
     return handle;
   }
 
@@ -227,7 +240,9 @@ public:
       return;
     env_manager_.unregisterObject(it->second.obj.get());
     env_objects_.erase(it);
+    env_recipe_.erase(handle);
     env_manager_.update();
+    containment_dirty_ = true;
   }
 
   void move_object(SceneHandle handle, const Transform &pose) override {
@@ -236,7 +251,10 @@ public:
       return;
     it->second.obj->setTransform(to_fcl(pose));
     it->second.obj->computeAABB();
+    if (const auto r = env_recipe_.find(handle); r != env_recipe_.end())
+      r->second.pose = pose;
     env_manager_.update();
+    containment_dirty_ = true;
   }
 
   [[nodiscard]] std::unique_ptr<Workspace> make_workspace() const override;
@@ -257,9 +275,15 @@ private:
   DistEval distance_query(const RobotInstance &robot, FclWorkspace &fws,
                           const QueryOptions &opts) const;
 
-  // Resolve + load + scale a robot mesh collision link into FCL geometry, caching by URI+scale so
-  // a mesh shared across links loads once. Throws (via resolve_mesh_uri/load_mesh) on failure.
-  std::shared_ptr<FclGeom> robot_mesh_geom(const CollisionGeometry &cg) {
+  // A loaded robot mesh: its FCL geometry + its geometry-frame centroid (the ADR-012 interior pt).
+  struct MeshEntry {
+    std::shared_ptr<FclGeom> geom;
+    Eigen::Vector3d centroid;
+  };
+
+  // Resolve + load + scale a robot mesh collision link, caching by URI+scale so a mesh shared
+  // across links loads once. Throws (via resolve_mesh_uri/load_mesh) on failure.
+  MeshEntry robot_mesh_geom(const CollisionGeometry &cg) {
     const std::string path =
         resolve_mesh_uri(cg.mesh_filename, sources_.package_dirs, sources_.base_dir);
     const std::string key = path + '|' + std::to_string(cg.mesh_scale.x()) + ',' +
@@ -269,17 +293,33 @@ private:
       return it->second;
     Mesh m = load_mesh(path);
     apply_scale(m, cg.mesh_scale);
-    auto geom = make_bvh(m);
-    mesh_cache_.emplace(key, geom);
-    return geom;
+    MeshEntry e{make_bvh(m), mesh_centroid(m.vertices)};
+    mesh_cache_.emplace(key, e);
+    return e;
+  }
+
+  // Rebuild the containment tester from the current environment if it changed.
+  void ensure_containment() const {
+    if (!containment_dirty_)
+      return;
+    SceneDescription env;
+    for (const auto &[handle, o] : env_recipe_)
+      env.objects.push_back(o);
+    containment_ = EnvContainment(env);
+    containment_dirty_ = false;
   }
 
   std::shared_ptr<const RobotModel> model_;
   MeshSources sources_;
-  std::unordered_map<std::string, std::shared_ptr<FclGeom>> mesh_cache_;
+  std::unordered_map<std::string, MeshEntry> mesh_cache_;
   std::vector<LinkShape> link_shapes_;
+  std::vector<std::pair<int, Eigen::Vector3d>>
+      link_interior_; // (link index, interior pt, link frame)
   std::unordered_map<SceneHandle, EnvObj> env_objects_;
+  std::unordered_map<SceneHandle, SceneObject> env_recipe_; // for containment rebuilds
   mutable FclManager env_manager_; // broad-phase queries are logically const
+  mutable EnvContainment containment_;
+  mutable bool containment_dirty_ = true;
   SceneHandle next_handle_ = 0;
 };
 
@@ -384,6 +424,11 @@ BatchResult FclScene::query_batch(const RobotInstance &robot, std::span<const Jo
     out.witnesses.assign(qs.size(), {});
   }
 
+  // ADR-012 containment: BVH triangle-triangle misses a robot mesh link fully inside an obstacle.
+  const bool do_containment = !link_interior_.empty();
+  if (do_containment)
+    ensure_containment();
+
   for (std::size_t i = 0; i < qs.size(); ++i) {
     const std::vector<Transform> link_poses = fk_all(model, qs[i]);
     for (std::size_t s = 0; s < link_shapes_.size(); ++s) {
@@ -393,20 +438,29 @@ BatchResult FclScene::query_batch(const RobotInstance &robot, std::span<const Jo
     }
     fws.manager_.update();
 
+    bool hit;
     if (!need_distance) {
-      out.in_collision[i] = boolean_query(robot, fws, opts) ? 1 : 0;
-      continue;
+      hit = boolean_query(robot, fws, opts);
+    } else {
+      const DistEval e = distance_query(robot, fws, opts);
+      hit = e.signed_distance < opts.safety_margin;
+      if (want_distance) {
+        const double clamped = e.signed_distance > opts.max_distance
+                                   ? static_cast<double>(opts.max_distance)
+                                   : e.signed_distance;
+        out.min_distance[i] = static_cast<float>(clamped);
+        out.witnesses[i] = e.witness;
+      }
     }
 
-    const DistEval e = distance_query(robot, fws, opts);
-    out.in_collision[i] = (e.signed_distance < opts.safety_margin) ? 1 : 0;
-    if (want_distance) {
-      const double clamped = e.signed_distance > opts.max_distance
-                                 ? static_cast<double>(opts.max_distance)
-                                 : e.signed_distance;
-      out.min_distance[i] = static_cast<float>(clamped);
-      out.witnesses[i] = e.witness;
+    if (!hit && do_containment && containment_.any()) {
+      for (const auto &[li, p] : link_interior_)
+        if (containment_.inside(link_poses[li] * p)) {
+          hit = true;
+          break;
+        }
     }
+    out.in_collision[i] = hit ? 1 : 0;
   }
   return out;
 }

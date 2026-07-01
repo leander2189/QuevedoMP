@@ -272,6 +272,30 @@ TEST(FclMeshLinks, MeshRobotWithoutSourcesThrows) {
   EXPECT_THROW(make_static_scene(model, SceneDescription{}), std::runtime_error);
 }
 
+// ADR-012 containment: a robot mesh link fully inside a watertight environment MESH produces no
+// triangle-triangle crossing, so FCL's surface test alone reports free — the parity ray catches it.
+TEST(FclContainment, MeshRobotInsideWatertightMesh) {
+  const auto model = RobotModel::from_urdf(read_text(fixtures() + "/robots/ur5.urdf"));
+  const RobotInstance robot(model);
+  const JointPosition home = JointPosition::Zero(model->dof());
+  QueryOptions opts;
+  opts.check_self_collision = false;
+
+  // A big watertight cube MESH enclosing the whole arm (no surface crossing anywhere).
+  SceneDescription cage;
+  cage.objects.push_back({"cage", box_mesh(2.0), Transform::Identity()});
+  const auto in = make_static_scene(model, cage, BackendHint::ForceCpuFcl, ur5_meshes());
+  const auto ws_in = in->make_workspace();
+  EXPECT_TRUE(in->query(robot, home, opts, *ws_in).in_collision);
+
+  // A tiny cube mesh far away contains nothing.
+  SceneDescription far;
+  far.objects.push_back({"pebble", box_mesh(0.05), at_x(5.0)});
+  const auto out = make_static_scene(model, far, BackendHint::ForceCpuFcl, ur5_meshes());
+  const auto ws_out = out->make_workspace();
+  EXPECT_FALSE(out->query(robot, home, opts, *ws_out).in_collision);
+}
+
 // ---- check_edge (Task 2a.4) --------------------------------------------------------------------
 
 namespace {

@@ -616,11 +616,16 @@ Options (user decision — changes global WSL behavior):
 >   — device toolchain self-test, primitive/empty degenerate build, and **OptiX==FCL** over a
 >   shoulder sweep into a thin-slab obstacle (surface crossings; both collisions and frees present).
 >   dev-optix all green; dev-cpu unaffected (113/113).
-> - **Deferred (follow-ups within 2b.1 before Phase 2b exit):** ADR-012 parity-ray **containment**
->   (v0 detects surface crossings only — a link fully inside a mesh with no edge crossing is missed);
->   ADR-013 **margins/padding**; **distance/witness** (throws — FCL-authoritative per §4.5);
->   **sphere/cylinder env tessellation**; **dynamic** add/move/remove (static v0); **persistent/grown
->   workspace buffers** (currently per-call alloc) + pinned staging + explicit stream.
+> - **ADR-012 containment DONE (2026-06-30):** a shared CPU `EnvContainment` (analytic inside-tests
+>   for box/sphere/cylinder solids; parity ray for watertight meshes, non-watertight excluded + logged
+>   once) runs in **both** backends per robot mesh link (interior point = mesh centroid). Closes the
+>   false-free blind spot (a link fully inside an obstacle). `src/collision/containment.{hpp,cpp}`.
+>   Verify: `FclContainment.MeshRobotInsideWatertightMesh` + `OptixBackend.ContainmentInsideWatertightMesh`
+>   (robot inside a big cube mesh → collision; far tiny cube → free); OptiX↔FCL agreement preserved.
+> - **Deferred (follow-ups within 2b.1 before Phase 2b exit):** ADR-013 **margins/padding**;
+>   **distance/witness** (throws — FCL-authoritative per §4.5); **sphere/cylinder env GAS tessellation**
+>   (containment already handles them analytically); **dynamic** add/move/remove (static v0);
+>   **persistent/grown workspace buffers** (currently per-call alloc) + pinned staging + explicit stream.
 > **Supersedes spec §4.5's "write IAS transforms → refit → launch per config" loop.** That
 > design puts an AS update + kernel launch + PCIe round-trip inside RRT's *serial* edge
 > loop — the classic GPU-planner failure mode. The replacement exploits exactly what the
