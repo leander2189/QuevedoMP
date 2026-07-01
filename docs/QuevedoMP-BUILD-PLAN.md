@@ -586,14 +586,21 @@ Options (user decision — changes global WSL behavior):
 
 ## Phase 2b — OptiX static backend (FIRST GPU work)
 
-### Task 2b.0 — Add OptiX to the (already CUDA-enabled) container + `FindOptiX.cmake`
+### Task 2b.0 — Add OptiX to the (already CUDA-enabled) container + `FindOptiX.cmake` ✅ (2026-06-30, via Task 0.9)
 > The CUDA container, `--gpus all`, and `nvcc` already exist and are validated from Phase 0.
 > This task only adds **OptiX** on top — unless you already did the optional Task 0.9.
-- Add the OptiX SDK to the Dockerfile via the build-arg stage from Task 0.9 (login-gated
-  installer, build-arg, never committed), and flip `QUEVEDOMP_WITH_OPTIX=ON` in `dev-gpu`/`release`.
-- Implement real `cmake/FindOptiX.cmake` (locates the SDK headers under `/opt/optix`).
-- **Verify:** `find_package(OptiX)` succeeds under `dev-gpu`; an OptiX sample initializes on the GPU.
-- **Done-when:** `cmake --preset dev-gpu` configures with OptiX found and the library builds.
+- **Satisfied by Task 0.9 (`b1dfeab`) + revalidated 2026-06-30.** OptiX SDK 8.1.0 is baked into the
+  image (Dockerfile `OPTIX_INSTALLER` build-arg; installer gitignored under `.devcontainer/optix/`),
+  `cmake/FindOptiX.cmake` locates `/opt/optix` and creates `OptiX::OptiX`, and the WSL OptiX runtime
+  is assembled by `.devcontainer/setup-wsl-optix.sh` into `.devcontainer/wsl-optix/` (gitignored,
+  proprietary), mounted at `/opt/wsl-optix` + `LD_LIBRARY_PATH`.
+- **Revalidated:** `cmake --preset dev-optix` → "OptiX 8.1.0 found"; builds; `tools/optix_smoke`
+  (`optixInit()` + device query) passes on the GPU (1.06 s).
+- **Deviation (recorded):** the OptiX build uses the dedicated **`dev-optix`** preset (introduced by
+  Task 0.9), **not** a `WITH_OPTIX=ON` flip of `dev-gpu`. Rationale: keeps the routine `dev-gpu`
+  per-task verification OptiX-free (fast; no WSL-runtime mount needed) while `dev-optix` exercises
+  the GPU-OptiX path. Flipping `dev-gpu`/`release` ON is deferred to **Phase 2b exit**, once the
+  OptiX backend is stable, so it becomes continuously tested for the shipping build.
 
 ### Task 2b.1 — OptiX backend (amendment M4 — batched-raygen design, NOT per-config IAS)
 > **Supersedes spec §4.5's "write IAS transforms → refit → launch per config" loop.** That
