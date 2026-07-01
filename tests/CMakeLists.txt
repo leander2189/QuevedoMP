@@ -85,3 +85,7 @@ gtest_discover_tests(test_collision_fcl)
 add_executable(test_capture_serialize unit/test_capture_serialize.cpp)
 target_link_libraries(test_capture_serialize PRIVATE quevedomp::quevedomp GTest::gtest_main)
 gtest_discover_tests(test_capture_serialize)
+
+add_executable(test_collision_viz unit/test_collision_viz.cpp)
+target_link_libraries(test_collision_viz PRIVATE quevedomp::quevedomp GTest::gtest_main)
+gtest_discover_tests(test_collision_viz)

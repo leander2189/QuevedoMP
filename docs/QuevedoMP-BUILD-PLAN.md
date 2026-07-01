@@ -553,7 +553,11 @@ Options (user decision — changes global WSL behavior):
   extension survives, all four geometry kinds, ACM normalization; corrupt blobs throw.
   `tests/unit/test_capture_serialize.cpp`. dev-cpu 111/111, dev-gpu 112/112.
 
-### Task 2a.6 — FCL-vs-MoveIt collision microbenchmark (amendment M2 gate)
+### Task 2a.6 — FCL-vs-MoveIt collision microbenchmark (amendment M2 gate) ⏸️ DEFERRED
+- **Postponed (2026-06-30):** blocked on its prerequisites — Task B.1 (≥1M-triangle high-poly
+  fixtures) and Task B.3 (MoveIt 2 baseline container), neither of which exists yet. Revisit when
+  B.1/B.3 land; sequence unchanged (still gates *before* leaning on the GPU backend for dense
+  meshes). Moving to Phase 2b in the meantime (user decision).
 - Benchmark `query_batch` (boolean) on the Task B.1 high-poly fixtures at RRT-realistic
   batch sizes (10/50/100 configs) per `docs/benchmarks/PROTOCOL.md`; compare against the
   Task B.3 MoveIt baseline's collision-checking throughput.
@@ -562,7 +566,21 @@ Options (user decision — changes global WSL behavior):
   MoveIt on dense meshes. If it doesn't, understand why **before** building the GPU backend
   on top of the same architecture.
 
-- **Phase 2a EXIT:** full CPU pipeline buildable/testable on FCL; round-trips pass; coverage >80% in `collision/`; **2a.6 microbenchmark recorded**. **No GPU.** Update memory.
+### Task 2a.7 — Collision visualization harness (viz + collision) ✅ (2026-06-30)
+- Rerun-backed visual debugging for collision scenes (added ahead of Phase 2b so OptiX-vs-FCL
+  discrepancies are eyeball-debuggable). Visualizer gains `log_mesh` vertex-color overload,
+  `log_points` (sphere obstacles / witness points), and `log_segments` (skeleton / witness pairs).
+- `examples/cpp/collision_visualize.cpp`: a fixture robot swept through a trajectory against a box
+  + sphere environment; colliding configs render the robot red, distance witnesses drawn as a
+  point-pair + segment. Writes `collision.rrd` under the `dev-viz` preset; a no-op otherwise.
+- **Verify:** `tests/unit/test_collision_viz.cpp` drives the collision scene + Visualizer in the
+  normal (WITH_RERUN=OFF) suite — asserts collision/witness correctness and that the viz path runs;
+  under `dev-viz` it also emits an `.rrd`. dev-cpu/dev-gpu green; dev-viz builds + artifact.
+
+- **Phase 2a EXIT (CPU pipeline):** ✅ interface + contract + FCL (boolean + distance + witness) +
+  robot mesh links + `check_edge` + serializers + collision-viz, buildable/testable on FCL;
+  round-trips pass. **No GPU.** ⏸️ 2a.6 microbenchmark + `collision/` coverage gate deferred with
+  Task 2a.6 (needs B.1/B.3). Proceeding to Phase 2b.
 
 ---
 

@@ -5,9 +5,15 @@
 // header, so consumers never need the rerun headers or the WITH_RERUN define.
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
+#include <utility>
+#include <vector>
+
+#include <Eigen/Core>
 
 #include "quevedomp/core/types.hpp"
 #include "quevedomp/robot/robot_model.hpp"
@@ -34,9 +40,22 @@ public:
   // Animation cursor: subsequent logs are stamped at frame `index` on a "frame" timeline.
   void set_frame(int64_t index);
 
+  // RGB in [0,255]; used to tint meshes/points/segments (e.g. red for a colliding config).
+  using Color = std::array<std::uint8_t, 3>;
+
   // Entity paths are rerun's hierarchical names, e.g. "world/ur5". All are no-ops when disabled.
   void log_pose(const std::string &entity, const Transform &tf);
-  void log_mesh(const std::string &entity, const Mesh &mesh, const Transform &tf = Transform{});
+  // `color`, if given, tints the whole mesh (useful to flag a colliding link red).
+  void log_mesh(const std::string &entity, const Mesh &mesh, const Transform &tf = Transform{},
+                const std::optional<Color> &color = std::nullopt);
+  // Points at world positions, one shared `color` and `radius` (m). A sphere obstacle renders as a
+  // single point with radius = its radius; collision witness points use this too.
+  void log_points(const std::string &entity, const std::vector<Eigen::Vector3d> &points,
+                  const Color &color, float radius = 0.01f);
+  // Line segments (each an endpoint pair) in one `color` — skeletons, witness pairs, normals.
+  void log_segments(const std::string &entity,
+                    const std::vector<std::pair<Eigen::Vector3d, Eigen::Vector3d>> &segments,
+                    const Color &color);
   // Per-link coordinate frames + a skeleton (line segments between connected link origins) for
   // the robot at configuration q.
   void log_robot(const std::string &entity, const RobotModel &model, const JointPosition &q);

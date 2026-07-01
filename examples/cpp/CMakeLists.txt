@@ -2,3 +2,6 @@
 # no-op unless the build set WITH_RERUN=ON (the dev-viz preset).
 add_executable(quevedomp_visualize visualize.cpp)
 target_link_libraries(quevedomp_visualize PRIVATE quevedomp::quevedomp)
+
+add_executable(quevedomp_collision_visualize collision_visualize.cpp)
+target_link_libraries(quevedomp_collision_visualize PRIVATE quevedomp::quevedomp)

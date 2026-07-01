@@ -48,7 +48,8 @@ void Visualizer::log_pose(const std::string &entity, const Transform &tf) {
   impl_->rec.log(entity, to_rr(tf));
 }
 
-void Visualizer::log_mesh(const std::string &entity, const Mesh &mesh, const Transform &tf) {
+void Visualizer::log_mesh(const std::string &entity, const Mesh &mesh, const Transform &tf,
+                          const std::optional<Color> &color) {
   impl_->rec.log(entity, to_rr(tf));
   std::vector<rerun::Position3D> positions;
   positions.reserve(mesh.vertices.size());
@@ -83,8 +84,36 @@ void Visualizer::log_mesh(const std::string &entity, const Mesh &mesh, const Tra
                          static_cast<float>(u.z()));
   }
 
-  impl_->rec.log(entity,
-                 rerun::Mesh3D(positions).with_triangle_indices(tris).with_vertex_normals(normals));
+  auto m3d = rerun::Mesh3D(positions).with_triangle_indices(tris).with_vertex_normals(normals);
+  if (color) {
+    const std::vector<rerun::Color> colors(positions.size(),
+                                           rerun::Color((*color)[0], (*color)[1], (*color)[2]));
+    m3d = std::move(m3d).with_vertex_colors(colors);
+  }
+  impl_->rec.log(entity, m3d);
+}
+
+void Visualizer::log_points(const std::string &entity, const std::vector<Eigen::Vector3d> &points,
+                            const Color &color, float radius) {
+  std::vector<rerun::Position3D> positions;
+  positions.reserve(points.size());
+  for (const auto &p : points)
+    positions.emplace_back(static_cast<float>(p.x()), static_cast<float>(p.y()),
+                           static_cast<float>(p.z()));
+  impl_->rec.log(entity, rerun::Points3D(positions)
+                             .with_colors(rerun::Color(color[0], color[1], color[2]))
+                             .with_radii(rerun::Radius(radius)));
+}
+
+void Visualizer::log_segments(
+    const std::string &entity,
+    const std::vector<std::pair<Eigen::Vector3d, Eigen::Vector3d>> &segments, const Color &color) {
+  std::vector<rerun::components::LineStrip3D> strips;
+  strips.reserve(segments.size());
+  for (const auto &[a, b] : segments)
+    strips.emplace_back(std::vector<rerun::Vec3D>{vec(a), vec(b)});
+  impl_->rec.log(
+      entity, rerun::LineStrips3D(strips).with_colors(rerun::Color(color[0], color[1], color[2])));
 }
 
 void Visualizer::log_robot(const std::string &entity, const RobotModel &model,
@@ -137,7 +166,13 @@ void Visualizer::save(const std::string &) {}
 void Visualizer::spawn() {}
 void Visualizer::set_frame(int64_t) {}
 void Visualizer::log_pose(const std::string &, const Transform &) {}
-void Visualizer::log_mesh(const std::string &, const Mesh &, const Transform &) {}
+void Visualizer::log_mesh(const std::string &, const Mesh &, const Transform &,
+                          const std::optional<Color> &) {}
+void Visualizer::log_points(const std::string &, const std::vector<Eigen::Vector3d> &,
+                            const Color &, float) {}
+void Visualizer::log_segments(const std::string &,
+                              const std::vector<std::pair<Eigen::Vector3d, Eigen::Vector3d>> &,
+                              const Color &) {}
 void Visualizer::log_robot(const std::string &, const RobotModel &, const JointPosition &) {}
 void Visualizer::log_trajectory(const std::string &, const RobotModel &, const Trajectory &,
                                 const std::string &) {}
