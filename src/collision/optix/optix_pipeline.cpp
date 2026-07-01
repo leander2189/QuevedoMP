@@ -74,8 +74,9 @@ void unit_box(std::vector<float3> &verts, std::vector<uint3> &tris) {
 
 } // namespace
 
-// Build the OptiX pipeline + a GAS over a known box, trace four rays with known hit/miss answers,
-// and check the returned booleans. Self-contained (owns its context) — a toolchain/GAS probe.
+// Build the OptiX pipeline + a GAS over a known box, then run one batched launch of link-local rays
+// under per-config transforms and check the atomicOr'd per-config booleans. Self-contained (owns
+// its context) — exercises the exact device mechanism the OptixScene query uses.
 bool optix_selftest(std::string &err) {
   CUDA_TRY(cudaFree(nullptr)); // create the primary context
   OPTIX_TRY(optixInit());
@@ -208,54 +209,76 @@ bool optix_selftest(std::string &err) {
   sbt.hitgroupRecordStrideInBytes = sizeof(Record);
   sbt.hitgroupRecordCount = 1;
 
-  // ---- rays with known answers ------------------------------------------------------------
-  //   0: from -z straight through the box   -> hit
-  //   1: parallel to +z but offset in x,y   -> miss
-  //   2: starts past the box pointing away  -> miss
-  //   3: from -x straight through the box    -> hit
-  const std::vector<float> origins = {0, 0, -5, 5, 5, -5, 0, 0, 5, -5, 0, 0};
-  const std::vector<float> dirs = {0, 0, 1, 0, 0, 1, 0, 0, 1, 1, 0, 0};
-  const std::vector<std::uint8_t> expected = {1, 0, 0, 1};
-  const unsigned width = 4;
+  // ---- batched transformed rays with known answers ----------------------------------------
+  // One link, two link-local rays: ray0 passes through the origin along +z (would hit the box at
+  // identity), ray1 points away from the box (always misses). Two configs via per-config
+  // transforms:
+  //   config 0 = identity          -> ray0 hits              -> out[0] = 1
+  //   config 1 = translate x += 10 -> ray0 now misses in x   -> out[1] = 0
+  const std::vector<float> ray_o = {0, 0, -5, 0, 0, 5};
+  const std::vector<float> ray_d = {0, 0, 1, 0, 0, 1};
+  const std::vector<float> ray_len = {10, 10};
+  const std::vector<int> ray_link = {0, 0};
+  const std::vector<float> xform = {1, 0, 0, 0,  0, 1, 0, 0, 0, 0, 1, 0,  // config 0: identity
+                                    1, 0, 0, 10, 0, 1, 0, 0, 0, 0, 1, 0}; // config 1: +x 10
+  const unsigned num_rays = 2, num_links = 1, num_configs = 2;
+  const std::vector<unsigned> expected = {1, 0};
 
-  void *d_o = nullptr, *d_d = nullptr, *d_out = nullptr;
-  CUDA_TRY(cudaMalloc(&d_o, origins.size() * sizeof(float)));
-  CUDA_TRY(cudaMalloc(&d_d, dirs.size() * sizeof(float)));
-  CUDA_TRY(cudaMalloc(&d_out, width));
-  CUDA_TRY(cudaMemcpy(d_o, origins.data(), origins.size() * sizeof(float), cudaMemcpyHostToDevice));
-  CUDA_TRY(cudaMemcpy(d_d, dirs.data(), dirs.size() * sizeof(float), cudaMemcpyHostToDevice));
-  CUDA_TRY(cudaMemset(d_out, 0, width));
+  auto upload = [&](const void *src, size_t bytes, void **dst) -> bool {
+    if (cudaMalloc(dst, bytes) != cudaSuccess)
+      return false;
+    return cudaMemcpy(*dst, src, bytes, cudaMemcpyHostToDevice) == cudaSuccess;
+  };
+  void *d_o = nullptr, *d_d = nullptr, *d_len = nullptr, *d_link = nullptr, *d_xf = nullptr,
+       *d_out = nullptr;
+  if (!upload(ray_o.data(), ray_o.size() * sizeof(float), &d_o) ||
+      !upload(ray_d.data(), ray_d.size() * sizeof(float), &d_d) ||
+      !upload(ray_len.data(), ray_len.size() * sizeof(float), &d_len) ||
+      !upload(ray_link.data(), ray_link.size() * sizeof(int), &d_link) ||
+      !upload(xform.data(), xform.size() * sizeof(float), &d_xf)) {
+    err = "device upload failed";
+    return false;
+  }
+  CUDA_TRY(cudaMalloc(&d_out, num_configs * sizeof(unsigned)));
+  CUDA_TRY(cudaMemset(d_out, 0, num_configs * sizeof(unsigned)));
 
   LaunchParams params{};
   params.handle = gas;
   params.ray_origin = static_cast<const float *>(d_o);
   params.ray_dir = static_cast<const float *>(d_d);
-  params.tmax = 100.0f;
-  params.out = static_cast<std::uint8_t *>(d_out);
-  params.width = width;
+  params.ray_len = static_cast<const float *>(d_len);
+  params.ray_link = static_cast<const int *>(d_link);
+  params.num_rays = num_rays;
+  params.num_links = num_links;
+  params.xform = static_cast<const float *>(d_xf);
+  params.num_configs = num_configs;
+  params.out = static_cast<unsigned *>(d_out);
   void *d_params = nullptr;
   CUDA_TRY(cudaMalloc(&d_params, sizeof(LaunchParams)));
   CUDA_TRY(cudaMemcpy(d_params, &params, sizeof(LaunchParams), cudaMemcpyHostToDevice));
 
   OPTIX_TRY(optixLaunch(pipeline, nullptr, reinterpret_cast<CUdeviceptr>(d_params),
-                        sizeof(LaunchParams), &sbt, width, 1, 1));
+                        sizeof(LaunchParams), &sbt, num_rays, num_configs, 1));
   CUDA_TRY(cudaDeviceSynchronize());
 
-  std::vector<std::uint8_t> host(width, 0xFF);
-  CUDA_TRY(cudaMemcpy(host.data(), d_out, width, cudaMemcpyDeviceToHost));
+  std::vector<unsigned> host(num_configs, 0xFFFFFFFF);
+  CUDA_TRY(cudaMemcpy(host.data(), d_out, num_configs * sizeof(unsigned), cudaMemcpyDeviceToHost));
 
   bool ok = host == expected;
   if (!ok) {
     std::ostringstream ss;
-    ss << "trace mismatch: got [";
-    for (unsigned i = 0; i < width; ++i)
-      ss << int(host[i]) << (i + 1 < width ? "," : "");
-    ss << "] expected [1,0,0,1]";
+    ss << "batched trace mismatch: got [";
+    for (unsigned i = 0; i < num_configs; ++i)
+      ss << host[i] << (i + 1 < num_configs ? "," : "");
+    ss << "] expected [1,0]";
     err = ss.str();
   }
 
   cudaFree(d_o);
   cudaFree(d_d);
+  cudaFree(d_len);
+  cudaFree(d_link);
+  cudaFree(d_xf);
   cudaFree(d_out);
   cudaFree(d_params);
   cudaFree(d_rg);

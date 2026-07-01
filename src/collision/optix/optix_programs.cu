@@ -1,9 +1,8 @@
-// collision/optix/optix_programs — OptiX device programs for the collision backend (Task 2b.1).
-//
-// Current stage: each raygen thread traces one world-space ray against the environment GAS with
-// terminate-on-first-hit and writes a boolean. Miss -> 0, closest-hit -> 1 (the first hit is the
-// closest under the terminate flag). The full backend keeps these programs and only changes how
-// rays are produced (per-config, per-link transforms applied on the fly) + how results reduce.
+// collision/optix/optix_programs — OptiX device programs for the collision backend (Task 2b.1,
+// ADR-014). Batched raygen: one thread per (ray, config). Each thread fetches its link-local ray,
+// applies that config's rigid transform for the ray's link, and traces the environment GAS with
+// terminate-on-first-hit; a hit atomicOr's into the config's result slot. Miss -> payload 0,
+// closest-hit -> 1 (the first hit is the closest under the terminate flag).
 #include <optix.h>
 
 #include "launch_params.hpp"
@@ -13,19 +12,34 @@ using quevedomp::collision::optix_backend::LaunchParams;
 extern "C" __constant__ LaunchParams params;
 
 extern "C" __global__ void __raygen__rg() {
-  const unsigned i = optixGetLaunchIndex().x;
-  if (i >= params.width)
+  const uint3 idx = optixGetLaunchIndex();
+  const unsigned r = idx.x; // ray
+  const unsigned c = idx.y; // config
+  if (r >= params.num_rays || c >= params.num_configs)
     return;
 
-  const float3 origin = make_float3(params.ray_origin[3 * i], params.ray_origin[3 * i + 1],
-                                    params.ray_origin[3 * i + 2]);
-  const float3 dir =
-      make_float3(params.ray_dir[3 * i], params.ray_dir[3 * i + 1], params.ray_dir[3 * i + 2]);
+  const float3 o = make_float3(params.ray_origin[3 * r], params.ray_origin[3 * r + 1],
+                               params.ray_origin[3 * r + 2]);
+  const float3 d =
+      make_float3(params.ray_dir[3 * r], params.ray_dir[3 * r + 1], params.ray_dir[3 * r + 2]);
+
+  // Apply this config's transform for the ray's link (row-major 3x4). Rotation to the direction,
+  // full affine to the origin. A rigid transform preserves length, so tmax stays ray_len.
+  const float *T = params.xform + (static_cast<std::size_t>(c) * params.num_links +
+                                   static_cast<unsigned>(params.ray_link[r])) *
+                                      12;
+  const float3 op = make_float3(T[0] * o.x + T[1] * o.y + T[2] * o.z + T[3],
+                                T[4] * o.x + T[5] * o.y + T[6] * o.z + T[7],
+                                T[8] * o.x + T[9] * o.y + T[10] * o.z + T[11]);
+  const float3 dp =
+      make_float3(T[0] * d.x + T[1] * d.y + T[2] * d.z, T[4] * d.x + T[5] * d.y + T[6] * d.z,
+                  T[8] * d.x + T[9] * d.y + T[10] * d.z);
 
   unsigned int hit = 0;
-  optixTrace(params.handle, origin, dir, 0.0f, params.tmax, 0.0f, OptixVisibilityMask(255),
+  optixTrace(params.handle, op, dp, 1e-4f, params.ray_len[r], 0.0f, OptixVisibilityMask(255),
              OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT, 0, 1, 0, hit);
-  params.out[i] = static_cast<unsigned char>(hit);
+  if (hit)
+    atomicOr(&params.out[c], 1u);
 }
 
 extern "C" __global__ void __miss__ms() { optixSetPayload_0(0); }
