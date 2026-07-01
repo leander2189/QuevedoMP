@@ -81,3 +81,7 @@ target_link_libraries(test_collision_fcl PRIVATE quevedomp::quevedomp GTest::gte
 target_compile_definitions(test_collision_fcl
   PRIVATE QUEVEDOMP_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
 gtest_discover_tests(test_collision_fcl)
+
+add_executable(test_capture_serialize unit/test_capture_serialize.cpp)
+target_link_libraries(test_capture_serialize PRIVATE quevedomp::quevedomp GTest::gtest_main)
+gtest_discover_tests(test_capture_serialize)

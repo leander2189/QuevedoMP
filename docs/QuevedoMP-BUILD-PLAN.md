@@ -538,9 +538,20 @@ Options (user decision — changes global WSL behavior):
   q sizes / non-positive resolution → throw. `tests/unit/test_collision_fcl.cpp` (`FclEdge.*`).
 - dev-cpu 105/105, dev-gpu 106/106.
 
-### Task 2a.5 — Serializers (`RobotModel`/`RobotInstance`/`CollisionScene`)
-- Build now; reused by captures in Phase 3 (spec §5.3).
-- **Verify:** round-trip equality (serialize→deserialize→compare).
+### Task 2a.5 — Serializers (`RobotModel`/`RobotInstance`/`CollisionScene`) ✅ (2026-06-30)
+- New `capture/` module: `serialize_robot_model` (retained URDF + optional tool YAML, re-parsed on
+  load — lossless), `serialize_robot_instance` (model blob + ACM allowed pairs),
+  `serialize_scene` (SceneDescription: id + pose + geometry variant incl. mesh verts/tris). Compact
+  self-describing binary (4-byte magic + version); same-endianness round-trip (MCAP/zstd container
+  is Phase 3, ADR-007). `deserialize_*` throw on bad magic/version/truncation.
+  `include/quevedomp/capture/serialize.hpp`, `src/capture/serialize.cpp`. RobotModel now retains its
+  `source_urdf()`/`source_yaml()`; ACM exposes `pairs()`.
+- **Note:** the "CollisionScene" serializer is the **SceneDescription** (objects + poses per §5.3) —
+  the capturable recipe a scene is rebuilt from via `make_static_scene` (the abstract backend has
+  no object enumeration; capture stores inputs, not backend state).
+- **Verify:** ✅ round-trip equality for all three (structure + re-serialize byte-equality), YAML
+  extension survives, all four geometry kinds, ACM normalization; corrupt blobs throw.
+  `tests/unit/test_capture_serialize.cpp`. dev-cpu 111/111, dev-gpu 112/112.
 
 ### Task 2a.6 — FCL-vs-MoveIt collision microbenchmark (amendment M2 gate)
 - Benchmark `query_batch` (boolean) on the Task B.1 high-poly fixtures at RRT-realistic

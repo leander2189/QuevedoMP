@@ -93,6 +93,11 @@ public:
   const std::vector<Joint> &joints() const noexcept { return joints_; }
   const std::string &root_link() const noexcept { return root_link_; }
 
+  // The exact source this model was parsed from — retained so a capture can re-inline and re-parse
+  // it losslessly (spec §5.3; used by capture/serialize). Empty yaml ⇒ none was supplied.
+  const std::string &source_urdf() const noexcept { return source_urdf_; }
+  const std::optional<std::string> &source_yaml() const noexcept { return source_yaml_; }
+
   std::size_t num_links() const noexcept { return links_.size(); }
   std::size_t num_joints() const noexcept { return joints_.size(); }
   std::size_t dof() const noexcept; // count of movable (non-fixed) joints
@@ -112,6 +117,8 @@ private:
   std::vector<Joint> joints_;
   std::unordered_map<std::string, int> link_index_;
   std::unordered_map<std::string, int> joint_index_;
+  std::string source_urdf_;
+  std::optional<std::string> source_yaml_;
 };
 
 } // namespace quevedomp

@@ -209,6 +209,9 @@ std::shared_ptr<const RobotModel> RobotModel::from_urdf(const std::string &urdf_
   if (yaml_extension)
     apply_yaml_extension(*yaml_extension, out->joints_, out->joint_index_);
 
+  out->source_urdf_ = urdf_xml;
+  out->source_yaml_ = yaml_extension;
+
   return out;
 }
 

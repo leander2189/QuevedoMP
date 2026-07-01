@@ -71,6 +71,7 @@ add_library(quevedomp
   src/collision/collision_scene.cpp
   src/collision/fcl_scene.cpp
   src/collision/edge_check.cpp
+  src/capture/serialize.cpp
   src/viz/visualizer.cpp
 )
 add_library(quevedomp::quevedomp ALIAS quevedomp)

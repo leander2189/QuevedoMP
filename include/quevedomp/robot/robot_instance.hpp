@@ -24,6 +24,9 @@ public:
   }
   std::size_t size() const noexcept { return allowed_.size(); }
 
+  // The normalized allowed pairs (a <= b), for serialization + comparison.
+  const std::set<std::pair<std::string, std::string>> &pairs() const noexcept { return allowed_; }
+
 private:
   static std::pair<std::string, std::string> key(const std::string &a, const std::string &b) {
     return (a <= b) ? std::pair{a, b} : std::pair{b, a};
