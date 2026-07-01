@@ -529,9 +529,14 @@ Options (user decision — changes global WSL behavior):
 - **Deferred:** `per_pair_padding` (PaddingMap override) is accepted in QueryOptions but not yet
   honored — wired when planning needs per-pair tuning.
 
-### Task 2a.4 — `check_edge`
-- Discretize q0→q1 at `resolution`, batch-check, return `first_contact_t`.
-- **Verify:** known free edge → `valid`; known colliding edge → correct `first_contact_t∈[0,1]`.
+### Task 2a.4 — `check_edge` ✅ (2026-06-30)
+- Discretize q0→q1 at `resolution` (rad, max per-joint step; `n = ceil(max|Δq|/resolution)`,
+  `n+1` samples incl. both endpoints), check as ONE `query_batch`, return the first colliding
+  `t = k/n` (1.0 if free). `src/collision/edge_check.cpp`.
+- **Verify:** ✅ free edge → `valid`, t=1.0; colliding edge → exact `first_contact_t` (0.5);
+  already-colliding start → t=0.0; edge through an environment obstacle → exact t; mismatched
+  q sizes / non-positive resolution → throw. `tests/unit/test_collision_fcl.cpp` (`FclEdge.*`).
+- dev-cpu 105/105, dev-gpu 106/106.
 
 ### Task 2a.5 — Serializers (`RobotModel`/`RobotInstance`/`CollisionScene`)
 - Build now; reused by captures in Phase 3 (spec §5.3).

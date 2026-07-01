@@ -70,6 +70,7 @@ add_library(quevedomp
   src/kinematics/ik.cpp
   src/collision/collision_scene.cpp
   src/collision/fcl_scene.cpp
+  src/collision/edge_check.cpp
   src/viz/visualizer.cpp
 )
 add_library(quevedomp::quevedomp ALIAS quevedomp)

@@ -13,6 +13,7 @@
 #include <Eigen/Core>
 
 #include "quevedomp/collision/collision_scene.hpp"
+#include "quevedomp/collision/edge_check.hpp"
 #include "quevedomp/collision/geometry.hpp"
 #include "quevedomp/collision/types.hpp"
 #include "quevedomp/robot/robot_instance.hpp"
@@ -264,6 +265,82 @@ TEST(FclMeshLinks, Ur5MeshRobotVsEnvironment) {
 TEST(FclMeshLinks, MeshRobotWithoutSourcesThrows) {
   const auto model = RobotModel::from_urdf(read_text(fixtures() + "/robots/ur5.urdf"));
   EXPECT_THROW(make_static_scene(model, SceneDescription{}), std::runtime_error);
+}
+
+// ---- check_edge (Task 2a.4) --------------------------------------------------------------------
+
+namespace {
+JointPosition qv(double x) {
+  JointPosition q(1);
+  q << x;
+  return q;
+}
+} // namespace
+
+// Prismatic robot, self-collision along the edge: the two r=0.3 spheres overlap once the child
+// slides within 0.6 of the base (|1.0+q| < 0.6, i.e. q < -0.4).
+TEST(FclEdge, FreeEdgeIsValid) {
+  const auto model = RobotModel::from_urdf(kPrismaticRobot);
+  const RobotInstance robot(model);
+  const auto scene = make_static_scene(model, SceneDescription{});
+  const auto ws = scene->make_workspace();
+
+  const EdgeResult r = check_edge(*scene, robot, qv(0.0), qv(-0.3), 0.1f, QueryOptions{}, *ws);
+  EXPECT_TRUE(r.valid); // closest approach 0.7 > 0.6, never collides
+  EXPECT_FLOAT_EQ(r.first_contact_t, 1.0f);
+}
+
+TEST(FclEdge, CollidingEdgeReportsFirstContact) {
+  const auto model = RobotModel::from_urdf(kPrismaticRobot);
+  const RobotInstance robot(model);
+  const auto scene = make_static_scene(model, SceneDescription{});
+  const auto ws = scene->make_workspace();
+
+  // q: 0 -> -1 at resolution 0.25 -> samples q = 0, -0.25, -0.5, -0.75, -1. First overlap at
+  // q = -0.5 (t = 0.5).
+  const EdgeResult r = check_edge(*scene, robot, qv(0.0), qv(-1.0), 0.25f, QueryOptions{}, *ws);
+  EXPECT_FALSE(r.valid);
+  EXPECT_FLOAT_EQ(r.first_contact_t, 0.5f);
+}
+
+TEST(FclEdge, CollidingStartIsContactAtZero) {
+  const auto model = RobotModel::from_urdf(kPrismaticRobot);
+  const RobotInstance robot(model);
+  const auto scene = make_static_scene(model, SceneDescription{});
+  const auto ws = scene->make_workspace();
+
+  const EdgeResult r = check_edge(*scene, robot, qv(-1.0), qv(-0.9), 0.1f, QueryOptions{}, *ws);
+  EXPECT_FALSE(r.valid);
+  EXPECT_FLOAT_EQ(r.first_contact_t, 0.0f); // q0 itself already collides
+}
+
+// An edge that drives the child link through an environment obstacle. Boundary at q = 0.45
+// (env sphere at x=2.05); at resolution 0.1 the first colliding sample is q = 0.5 (t = 0.5).
+TEST(FclEdge, EdgeThroughEnvironmentObstacle) {
+  const auto model = RobotModel::from_urdf(kPrismaticRobot);
+  const RobotInstance robot(model);
+  SceneDescription env;
+  env.objects.push_back({"post", SphereShape{0.3}, at_x(2.05)});
+  const auto scene = make_static_scene(model, env);
+  const auto ws = scene->make_workspace();
+
+  const EdgeResult r = check_edge(*scene, robot, qv(0.0), qv(1.0), 0.1f, QueryOptions{}, *ws);
+  EXPECT_FALSE(r.valid);
+  EXPECT_FLOAT_EQ(r.first_contact_t, 0.5f);
+}
+
+TEST(FclEdge, MismatchedSizesThrow) {
+  const auto model = RobotModel::from_urdf(kPrismaticRobot);
+  const RobotInstance robot(model);
+  const auto scene = make_static_scene(model, SceneDescription{});
+  const auto ws = scene->make_workspace();
+
+  JointPosition q2(2);
+  q2 << 0.0, 0.0;
+  EXPECT_THROW(check_edge(*scene, robot, qv(0.0), q2, 0.1f, QueryOptions{}, *ws),
+               std::runtime_error);
+  EXPECT_THROW(check_edge(*scene, robot, qv(0.0), qv(1.0), 0.0f, QueryOptions{}, *ws),
+               std::runtime_error);
 }
 
 // ---- dynamic environment editing ---------------------------------------------------------------
