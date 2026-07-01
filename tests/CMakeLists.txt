@@ -89,3 +89,12 @@ gtest_discover_tests(test_capture_serialize)
 add_executable(test_collision_viz unit/test_collision_viz.cpp)
 target_link_libraries(test_collision_viz PRIVATE quevedomp::quevedomp GTest::gtest_main)
 gtest_discover_tests(test_collision_viz)
+
+# OptiX backend tests — only when the OptiX build is on (dev-optix preset). CUDA/OptiX trip
+# ASan/LSan the same way the smoke test does, so use the same suppressions.
+if(QUEVEDOMP_WITH_OPTIX)
+  add_executable(test_optix_backend unit/test_optix_backend.cpp)
+  target_link_libraries(test_optix_backend PRIVATE quevedomp::quevedomp GTest::gtest_main)
+  gtest_discover_tests(test_optix_backend PROPERTIES
+    ENVIRONMENT "ASAN_OPTIONS=protect_shadow_gap=0:detect_leaks=0")
+endif()

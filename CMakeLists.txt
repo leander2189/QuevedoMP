@@ -117,7 +117,29 @@ if(QUEVEDOMP_WITH_OPTIX)
   endif()
   list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
   find_package(OptiX REQUIRED)
+  find_package(CUDAToolkit REQUIRED)
   add_subdirectory(tools/optix_smoke)
+
+  # ---- OptiX collision backend (Task 2b.1) --------------------------------------------------
+  # Device programs -> PTX (OBJECT lib with CUDA_PTX_COMPILATION). The library reads the .ptx at
+  # runtime via QUEVEDOMP_OPTIX_PTX_PATH (a generator expression to the compiled PTX); embedding
+  # the PTX into the binary is a later hardening step. Turing+ (CC 7.5) is the host floor (M1).
+  add_library(quevedomp_optix_ptx OBJECT src/collision/optix/optix_programs.cu)
+  set_target_properties(quevedomp_optix_ptx PROPERTIES CUDA_PTX_COMPILATION ON
+                                                       CUDA_ARCHITECTURES 75)
+  target_include_directories(quevedomp_optix_ptx
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/collision/optix)
+  target_link_libraries(quevedomp_optix_ptx PRIVATE OptiX::OptiX)
+  target_compile_options(quevedomp_optix_ptx
+    PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>)
+
+  target_sources(quevedomp PRIVATE src/collision/optix/optix_pipeline.cpp)
+  add_dependencies(quevedomp quevedomp_optix_ptx)
+  target_include_directories(quevedomp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/collision/optix)
+  target_link_libraries(quevedomp PRIVATE OptiX::OptiX CUDA::cudart)
+  target_compile_definitions(quevedomp
+    PRIVATE QUEVEDOMP_WITH_OPTIX
+            QUEVEDOMP_OPTIX_PTX_PATH="$<TARGET_OBJECTS:quevedomp_optix_ptx>")
 endif()
 
 # ---- Tests -------------------------------------------------------------------------------
