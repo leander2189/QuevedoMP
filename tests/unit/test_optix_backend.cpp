@@ -9,7 +9,7 @@ namespace quevedomp::collision {
 bool optix_selftest(std::string &err);
 }
 
-TEST(OptixBackend, PipelineLaunchWritesSentinels) {
+TEST(OptixBackend, TracesEnvironmentGas) {
   std::string err;
   EXPECT_TRUE(quevedomp::collision::optix_selftest(err)) << err;
 }
