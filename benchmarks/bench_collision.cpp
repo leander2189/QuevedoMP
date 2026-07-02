@@ -112,12 +112,24 @@ Mesh make_wall_mesh(double px, double y0, double y1, double z0, double z1, int n
   return m;
 }
 
-// A dense-mesh environment of ~target_tris triangles: a wall the UR5 sweeps into.
+// A dense-mesh environment of ~target_tris triangles: a wall the UR5 sweeps into. Spans the whole
+// workspace, so nearly every link is near it (adversarial for the broadphase cull).
 SceneDescription make_mesh_env(int target_tris) {
   const int n = std::max(1, static_cast<int>(std::lround(std::sqrt(target_tris / 2.0))));
   SceneDescription env;
   env.objects.push_back(
       {"wall", make_wall_mesh(0.35, -0.6, 0.6, 0.0, 1.0, n), Transform::Identity()});
+  return env;
+}
+
+// Same triangle budget, but a small (0.3x0.3 m) dense panel off in one corner that only the extended
+// arm reaches — so the base/shoulder/upper links stay far from it. This is where a robot-link
+// broadphase cull can skip most links' rays; contrast its A/B with make_mesh_env.
+SceneDescription make_localized_mesh_env(int target_tris) {
+  const int n = std::max(1, static_cast<int>(std::lround(std::sqrt(target_tris / 2.0))));
+  SceneDescription env;
+  env.objects.push_back(
+      {"panel", make_wall_mesh(0.5, 0.25, 0.55, 0.55, 0.85, n), Transform::Identity()});
   return env;
 }
 
@@ -130,12 +142,19 @@ double fraction_true(const std::vector<std::uint8_t> &v) {
   return static_cast<double>(c) / static_cast<double>(v.size());
 }
 
+// Best (minimum) per-call time over `trials` runs of `reps` iterations each. The minimum is the
+// most stable estimator of steady-state cost — it rejects the one-off jitter (scheduling, clock
+// ramp, contention) that inflates a mean.
 template <class F> double time_ms(int reps, F &&f) {
-  const auto t0 = std::chrono::steady_clock::now();
-  for (int i = 0; i < reps; ++i)
-    f();
-  const auto t1 = std::chrono::steady_clock::now();
-  return std::chrono::duration<double, std::milli>(t1 - t0).count() / reps;
+  double best = 1e30;
+  for (int t = 0; t < 5; ++t) {
+    const auto t0 = std::chrono::steady_clock::now();
+    for (int i = 0; i < reps; ++i)
+      f();
+    const auto t1 = std::chrono::steady_clock::now();
+    best = std::min(best, std::chrono::duration<double, std::milli>(t1 - t0).count() / reps);
+  }
+  return best;
 }
 
 void run_table(const char *title, const CollisionScene &fcl, const CollisionScene &optix,
@@ -246,7 +265,12 @@ int main() {
   // The ~50-tri mesh isolates the host-bound floor (near-zero GPU traversal, no containment since it
   // is non-watertight): whatever it costs is FK + transform assembly + transfers, not the BVH.
   for (int tris : {50, 5000, 50000, 500000})
-    bench_env("HIGH-POLY MESH", model, robot, make_mesh_env(tris), pool, {1, 10, 100, 1000}, 20000);
+    bench_env("HIGH-POLY MESH (spanning wall)", model, robot, make_mesh_env(tris), pool,
+              {1, 10, 100, 1000}, 20000);
+
+  // Localized obstacle — where the opt-in broadphase cull (QUEVEDOMP_OPTIX_CULL) should pay off.
+  bench_env("LOCALIZED MESH (corner panel)", model, robot, make_localized_mesh_env(50000), pool,
+            {1, 10, 100, 1000}, 20000);
 
   return 0;
 }

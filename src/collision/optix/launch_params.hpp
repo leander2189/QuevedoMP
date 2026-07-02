@@ -31,6 +31,11 @@ struct LaunchParams {
   unsigned num_configs;
 
   unsigned *out; // [num_configs]; atomicOr(1) on any hit
+
+  // Broadphase cull mask [num_configs * num_links], row-major (config, link): 1 => this link's world
+  // AABB does not overlap the environment for this config, so skip its rays entirely (they cannot
+  // hit). Null => no culling. A conservative cull that never changes the boolean result.
+  const unsigned char *link_cull;
 };
 
 } // namespace quevedomp::collision::optix_backend

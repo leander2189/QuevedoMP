@@ -17,7 +17,9 @@
 // on the CPU); robot rays come from MESH collision links. The scene is static (build via
 // make_static_scene; no post-build add/move/remove yet).
 #include <cstdint>
+#include <cstdlib>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <sstream>
@@ -164,8 +166,8 @@ public:
   }
   std::unique_ptr<Workspace> fcl_ws_;
   cudaStream_t stream = nullptr; // all this workspace's GPU work is ordered on one explicit stream
-  DeviceBuffer d_xform, d_out, d_params; // persistent, grown geometrically across calls
-  PinnedBuffer h_xform, h_hits;          // pinned staging for the H2D transforms / D2H results
+  DeviceBuffer d_xform, d_out, d_params, d_cull; // persistent, grown geometrically across calls
+  PinnedBuffer h_xform, h_hits, h_cull;          // pinned staging for H2D transforms / cull / D2H
 };
 
 class OptixScene final : public CollisionScene {
@@ -223,24 +225,59 @@ public:
     // Everything below is enqueued on the workspace's own stream from pinned staging and joined by a
     // single cudaStreamSynchronize — no per-op device sync, no per-call cudaMalloc/Free.
     if (num_rays_ > 0 && gas_ != 0 && n > 0) {
+      // Broadphase robot-link cull (ADR-014 prototype). OPT-IN via QUEVEDOMP_OPTIX_CULL: it wins only
+      // when a localized obstacle lets many links cull; on a workspace-spanning obstacle its host +
+      // per-ray overhead exceeds the traces it skips, so it is off (and never computed) by default.
+      static const bool cull_enabled = std::getenv("QUEVEDOMP_OPTIX_CULL") != nullptr;
+
       const std::size_t slots = ray_link_slots_.size();
       const std::size_t xform_floats = n * slots * 12;
       ows.h_xform.reserve(xform_floats * sizeof(float));
       float *xform = ows.h_xform.as<float>();
+      unsigned char *cull = nullptr;
+      if (cull_enabled) {
+        ows.h_cull.reserve(n * slots); // one byte per (config, slot): 1 => cull this link's rays
+        cull = ows.h_cull.as<unsigned char>();
+      }
       for (std::size_t c = 0; c < n; ++c) {
         const std::vector<Transform> poses = fk_all(model, qs[c]);
         for (std::size_t s = 0; s < slots; ++s) {
-          const Eigen::Matrix4d m = poses[ray_link_slots_[s]].matrix();
+          const Transform &P = poses[ray_link_slots_[s]];
+          const Eigen::Matrix4d m = P.matrix();
           float *T = xform + (c * slots + s) * 12;
           for (int r = 0; r < 3; ++r)
             for (int col = 0; col < 4; ++col)
               T[r * 4 + col] = static_cast<float>(m(r, col));
+
+          if (!cull_enabled)
+            continue;
+          // Pose the link-local ray AABB (its 8 corners) into the world and test it against the
+          // environment AABB. No overlap => none of this link's rays can hit => cull.
+          Eigen::Vector3f wlo = Eigen::Vector3f::Constant(std::numeric_limits<float>::infinity());
+          Eigen::Vector3f whi = Eigen::Vector3f::Constant(-std::numeric_limits<float>::infinity());
+          for (int k = 0; k < 8; ++k) {
+            const Eigen::Vector3d corner((k & 1) ? slot_hi_[s].x() : slot_lo_[s].x(),
+                                         (k & 2) ? slot_hi_[s].y() : slot_lo_[s].y(),
+                                         (k & 4) ? slot_hi_[s].z() : slot_lo_[s].z());
+            const Eigen::Vector3f w = (P * corner).cast<float>();
+            wlo = wlo.cwiseMin(w);
+            whi = whi.cwiseMax(w);
+          }
+          const bool overlap = (wlo.array() <= env_hi_.array()).all() &&
+                               (env_lo_.array() <= whi.array()).all();
+          cull[c * slots + s] = overlap ? 0 : 1;
         }
       }
       ows.d_xform.alloc(xform_floats * sizeof(float));
       cuda_check(cudaMemcpyAsync(ows.d_xform.ptr, xform, xform_floats * sizeof(float),
                                  cudaMemcpyHostToDevice, ows.stream),
                  "cudaMemcpyAsync H2D xform");
+      if (cull_enabled) {
+        ows.d_cull.alloc(n * slots);
+        cuda_check(
+            cudaMemcpyAsync(ows.d_cull.ptr, cull, n * slots, cudaMemcpyHostToDevice, ows.stream),
+            "cudaMemcpyAsync H2D cull");
+      }
       ows.d_out.alloc(n * sizeof(unsigned));
       cuda_check(cudaMemsetAsync(ows.d_out.ptr, 0, n * sizeof(unsigned), ows.stream),
                  "cudaMemsetAsync out");
@@ -256,6 +293,7 @@ public:
       p.xform = ows.d_xform.as<float>();
       p.num_configs = static_cast<unsigned>(n);
       p.out = ows.d_out.as<unsigned>();
+      p.link_cull = cull_enabled ? ows.d_cull.as<unsigned char>() : nullptr;
 
       // p is stack-local but stays alive until the stream sync below, so the async copy is safe.
       ows.d_params.alloc(sizeof(LaunchParams));
@@ -393,6 +431,15 @@ private:
     if (tris.empty())
       return; // empty environment: gas_ stays 0, robot-vs-env skipped
 
+    // World-space AABB of the whole environment — the broadphase-cull test target (per config, a
+    // robot link whose world AABB misses this box casts no ray that can hit).
+    env_lo_ = Eigen::Vector3f::Constant(std::numeric_limits<float>::infinity());
+    env_hi_ = Eigen::Vector3f::Constant(-std::numeric_limits<float>::infinity());
+    for (const float3 &v : verts) {
+      env_lo_ = env_lo_.cwiseMin(Eigen::Vector3f(v.x, v.y, v.z));
+      env_hi_ = env_hi_.cwiseMax(Eigen::Vector3f(v.x, v.y, v.z));
+    }
+
     d_env_verts_.upload(verts.data(), verts.size() * sizeof(float3));
     d_env_tris_.upload(tris.data(), tris.size() * sizeof(uint3));
     CUdeviceptr dv = reinterpret_cast<CUdeviceptr>(d_env_verts_.ptr);
@@ -454,6 +501,9 @@ private:
     const auto &links = model_->links();
     for (int li = 0; li < static_cast<int>(links.size()); ++li) {
       std::size_t before = len.size();
+      // Link-local AABB over this link's ray endpoints (for the per-config broadphase cull).
+      Eigen::Vector3d lo = Eigen::Vector3d::Constant(std::numeric_limits<double>::infinity());
+      Eigen::Vector3d hi = Eigen::Vector3d::Constant(-std::numeric_limits<double>::infinity());
       for (const CollisionGeometry &cg : links[li].collisions) {
         if (cg.type != GeometryType::Mesh)
           continue; // OptiX robot geometry is mesh-based (documented)
@@ -480,6 +530,8 @@ private:
           dir.insert(dir.end(), {float(u.x()), float(u.y()), float(u.z())});
           len.push_back(static_cast<float>(l));
           link.push_back(slot);
+          lo = lo.cwiseMin(lv[a]).cwiseMin(lv[b]);
+          hi = hi.cwiseMax(lv[a]).cwiseMax(lv[b]);
         };
         for (const Eigen::Vector3i &t : m.triangles) {
           add_edge(t.x(), t.y());
@@ -489,8 +541,11 @@ private:
         // slot is only "used" once we know this link produced rays; guard below.
         (void)slot;
       }
-      if (len.size() > before)
+      if (len.size() > before) {
         ray_link_slots_.push_back(li); // this link contributed rays -> it gets a transform slot
+        slot_lo_.push_back(lo.cast<float>());
+        slot_hi_.push_back(hi.cast<float>());
+      }
     }
     num_rays_ = static_cast<unsigned>(len.size());
     if (num_rays_ == 0)
@@ -518,6 +573,11 @@ private:
   DeviceBuffer d_ray_origin_, d_ray_dir_, d_ray_len_, d_ray_link_;
   unsigned num_rays_ = 0;
   std::vector<int> ray_link_slots_; // slot -> model link index
+
+  // Broadphase cull: per-slot link-local ray AABB + the environment world AABB (ADR-014 robot-link
+  // cull — skip a link's rays when its posed AABB misses the environment).
+  std::vector<Eigen::Vector3f> slot_lo_, slot_hi_;
+  Eigen::Vector3f env_lo_ = Eigen::Vector3f::Zero(), env_hi_ = Eigen::Vector3f::Zero();
 
   EnvContainment containment_;
   std::vector<std::pair<int, Eigen::Vector3d>>
