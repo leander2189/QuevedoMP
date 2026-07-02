@@ -4,6 +4,7 @@
 //   2) the OptiX boolean AGREES with FCL on a real mesh robot vs a surface-crossing obstacle.
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -126,6 +127,55 @@ TEST(OptixBackend, AgreesWithFclOnSurfaceCrossing) {
   EXPECT_EQ(agree, static_cast<int>(qs.size())); // full agreement
   EXPECT_GT(collisions, 0) << "obstacle never engaged — test is trivial";
   EXPECT_GT(frees, 0) << "obstacle always engaged — test is trivial";
+}
+
+// Persistent/grown workspace buffers (ADR-014): one workspace reused across several query_batch
+// calls with DIFFERENT batch sizes (grow then shrink) must keep agreeing with FCL config-for-config.
+// This exercises the geometric-growth device/pinned buffers and the explicit-stream launch path —
+// stale capacity, a wrong memset/copy length, or leftover results would surface here.
+TEST(OptixBackend, ReusedWorkspaceVaryingBatchSizesAgreeWithFcl) {
+  const auto model = RobotModel::from_urdf(read_text(fixtures() + "/robots/ur5.urdf"));
+  const RobotInstance robot(model);
+  const int dof = static_cast<int>(model->dof());
+
+  const Eigen::Vector3d wrist = fk(*model, JointPosition::Zero(dof), "wrist_3_link").translation();
+  SceneDescription env;
+  env.objects.push_back({"wall", BoxShape{Eigen::Vector3d(0.25, 0.25, 0.02)},
+                         Transform::from_translation(wrist)});
+
+  const auto fcl = make_static_scene(model, env, BackendHint::ForceCpuFcl, ur5_meshes());
+  const auto optix = make_static_scene(model, env, BackendHint::ForceOptix, ur5_meshes());
+  const auto fcl_ws = fcl->make_workspace();
+  const auto optix_ws = optix->make_workspace(); // reused across every batch below
+
+  QueryOptions opts;
+  opts.check_self_collision = false;
+
+  auto sweep = [&](int count) {
+    std::vector<JointPosition> qs;
+    for (int k = 0; k < count; ++k) {
+      JointPosition q = JointPosition::Zero(dof);
+      q[0] = -0.8 + 1.6 * k / std::max(1, count - 1);
+      qs.push_back(q);
+    }
+    return qs;
+  };
+
+  // Grow (32) → shrink (5) → grow again (20): the second batch must not see the first's capacity or
+  // stale device results, and the reused pinned/device buffers must serve every size correctly.
+  int total_collisions = 0, total_frees = 0;
+  for (int count : {32, 5, 20}) {
+    const std::vector<JointPosition> qs = sweep(count);
+    const BatchResult f = fcl->query_batch(robot, qs, opts, *fcl_ws);
+    const BatchResult o = optix->query_batch(robot, qs, opts, *optix_ws);
+    ASSERT_EQ(o.in_collision.size(), qs.size());
+    for (std::size_t i = 0; i < qs.size(); ++i) {
+      EXPECT_EQ(o.in_collision[i], f.in_collision[i]) << "n=" << count << " config " << i;
+      (f.in_collision[i] ? total_collisions : total_frees)++;
+    }
+  }
+  EXPECT_GT(total_collisions, 0) << "obstacle never engaged — test is trivial";
+  EXPECT_GT(total_frees, 0) << "obstacle always engaged — test is trivial";
 }
 
 // ADR-012 containment: a robot fully inside a watertight mesh casts no surface ray that hits, so

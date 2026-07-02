@@ -622,10 +622,18 @@ Options (user decision — changes global WSL behavior):
 >   false-free blind spot (a link fully inside an obstacle). `src/collision/containment.{hpp,cpp}`.
 >   Verify: `FclContainment.MeshRobotInsideWatertightMesh` + `OptixBackend.ContainmentInsideWatertightMesh`
 >   (robot inside a big cube mesh → collision; far tiny cube → free); OptiX↔FCL agreement preserved.
+> - **Workspace perf DONE (2026-07-02):** the `OptixWorkspace` now owns an explicit CUDA stream and
+>   **persistent, geometrically-grown** device buffers (transforms/results/params) + **pinned host
+>   staging** for the H2D transforms / D2H results; per `query_batch` all copies + memset + launch are
+>   enqueued on that stream and joined by one `cudaStreamSynchronize` — no per-call `cudaMalloc`/`Free`,
+>   no whole-device sync. `src/collision/optix/optix_scene.cpp`. Verify:
+>   `OptixBackend.ReusedWorkspaceVaryingBatchSizesAgreeWithFcl` (one workspace reused across 32→5→20
+>   batches, OptiX==FCL each time); full dev-optix 121/121.
 > - **Deferred (follow-ups within 2b.1 before Phase 2b exit):** ADR-013 **margins/padding**;
 >   **distance/witness** (throws — FCL-authoritative per §4.5); **sphere/cylinder env GAS tessellation**
->   (containment already handles them analytically); **dynamic** add/move/remove (static v0);
->   **persistent/grown workspace buffers** (currently per-call alloc) + pinned staging + explicit stream.
+>   (containment already handles them analytically; needs a decision — fine conservative tessellation
+>   vs exact analytic curved solids via multi-GAS/IAS — to stay inside the ±1e-4 m differential band);
+>   **dynamic** add/move/remove (static v0).
 > **Supersedes spec §4.5's "write IAS transforms → refit → launch per config" loop.** That
 > design puts an AS update + kernel launch + PCIe round-trip inside RRT's *serial* edge
 > loop — the classic GPU-planner failure mode. The replacement exploits exactly what the

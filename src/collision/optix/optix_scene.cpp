@@ -71,10 +71,12 @@ std::string read_ptx() {
   return ss.str();
 }
 
-// A generic RAII device buffer.
+// A generic RAII device buffer. Grows geometrically and never shrinks, so a workspace reused
+// across query_batch calls stops reallocating once it has seen its largest batch (the "persistent,
+// geometrically-grown" buffers of the ADR-014 workspace design).
 struct DeviceBuffer {
   void *ptr = nullptr;
-  std::size_t bytes = 0;
+  std::size_t bytes = 0; // capacity
   DeviceBuffer() = default;
   DeviceBuffer(const DeviceBuffer &) = delete;
   DeviceBuffer &operator=(const DeviceBuffer &) = delete;
@@ -83,12 +85,34 @@ struct DeviceBuffer {
     if (n <= bytes)
       return;
     cudaFree(ptr);
-    cuda_check(cudaMalloc(&ptr, n), "cudaMalloc");
-    bytes = n;
+    const std::size_t grown = n > bytes * 2 ? n : bytes * 2;
+    cuda_check(cudaMalloc(&ptr, grown), "cudaMalloc");
+    bytes = grown;
   }
   void upload(const void *src, std::size_t n) {
     alloc(n);
     cuda_check(cudaMemcpy(ptr, src, n, cudaMemcpyHostToDevice), "cudaMemcpy H2D");
+  }
+  template <typename T> T *as() const { return static_cast<T *>(ptr); }
+};
+
+// A generic RAII pinned (page-locked) host buffer, mirroring DeviceBuffer's grow-and-keep policy.
+// Pinned staging makes the per-query H2D transforms / D2H results copies async-capable and faster
+// than pageable memory (ADR-014 workspace: "pinned host staging").
+struct PinnedBuffer {
+  void *ptr = nullptr;
+  std::size_t bytes = 0; // capacity
+  PinnedBuffer() = default;
+  PinnedBuffer(const PinnedBuffer &) = delete;
+  PinnedBuffer &operator=(const PinnedBuffer &) = delete;
+  ~PinnedBuffer() { cudaFreeHost(ptr); }
+  void reserve(std::size_t n) {
+    if (n <= bytes)
+      return;
+    cudaFreeHost(ptr);
+    const std::size_t grown = n > bytes * 2 ? n : bytes * 2;
+    cuda_check(cudaMallocHost(&ptr, grown), "cudaMallocHost");
+    bytes = grown;
   }
   template <typename T> T *as() const { return static_cast<T *>(ptr); }
 };
@@ -131,10 +155,17 @@ void append_mesh(std::vector<float3> &verts, std::vector<uint3> &idx, const Mesh
 
 class OptixWorkspace final : public Workspace {
 public:
-  explicit OptixWorkspace(std::unique_ptr<Workspace> fcl_ws) : fcl_ws_(std::move(fcl_ws)) {}
+  explicit OptixWorkspace(std::unique_ptr<Workspace> fcl_ws) : fcl_ws_(std::move(fcl_ws)) {
+    cuda_check(cudaStreamCreate(&stream), "cudaStreamCreate");
+  }
+  ~OptixWorkspace() override {
+    if (stream)
+      cudaStreamDestroy(stream); // every query_batch syncs, so nothing is in flight here
+  }
   std::unique_ptr<Workspace> fcl_ws_;
-  DeviceBuffer d_xform;
-  DeviceBuffer d_out;
+  cudaStream_t stream = nullptr; // all this workspace's GPU work is ordered on one explicit stream
+  DeviceBuffer d_xform, d_out, d_params; // persistent, grown geometrically across calls
+  PinnedBuffer h_xform, h_hits;          // pinned staging for the H2D transforms / D2H results
 };
 
 class OptixScene final : public CollisionScene {
@@ -189,22 +220,30 @@ public:
     std::vector<std::uint8_t> result(n, 0);
 
     // ---- GPU robot-vs-environment ----
+    // Everything below is enqueued on the workspace's own stream from pinned staging and joined by a
+    // single cudaStreamSynchronize — no per-op device sync, no per-call cudaMalloc/Free.
     if (num_rays_ > 0 && gas_ != 0 && n > 0) {
       const std::size_t slots = ray_link_slots_.size();
-      std::vector<float> xform(n * slots * 12);
+      const std::size_t xform_floats = n * slots * 12;
+      ows.h_xform.reserve(xform_floats * sizeof(float));
+      float *xform = ows.h_xform.as<float>();
       for (std::size_t c = 0; c < n; ++c) {
         const std::vector<Transform> poses = fk_all(model, qs[c]);
         for (std::size_t s = 0; s < slots; ++s) {
           const Eigen::Matrix4d m = poses[ray_link_slots_[s]].matrix();
-          float *T = xform.data() + (c * slots + s) * 12;
+          float *T = xform + (c * slots + s) * 12;
           for (int r = 0; r < 3; ++r)
             for (int col = 0; col < 4; ++col)
               T[r * 4 + col] = static_cast<float>(m(r, col));
         }
       }
-      ows.d_xform.upload(xform.data(), xform.size() * sizeof(float));
+      ows.d_xform.alloc(xform_floats * sizeof(float));
+      cuda_check(cudaMemcpyAsync(ows.d_xform.ptr, xform, xform_floats * sizeof(float),
+                                 cudaMemcpyHostToDevice, ows.stream),
+                 "cudaMemcpyAsync H2D xform");
       ows.d_out.alloc(n * sizeof(unsigned));
-      cuda_check(cudaMemset(ows.d_out.ptr, 0, n * sizeof(unsigned)), "cudaMemset out");
+      cuda_check(cudaMemsetAsync(ows.d_out.ptr, 0, n * sizeof(unsigned), ows.stream),
+                 "cudaMemsetAsync out");
 
       LaunchParams p{};
       p.handle = gas_;
@@ -218,17 +257,20 @@ public:
       p.num_configs = static_cast<unsigned>(n);
       p.out = ows.d_out.as<unsigned>();
 
-      DeviceBuffer d_params;
-      d_params.upload(&p, sizeof(p));
-      optix_check(optixLaunch(pipeline_, nullptr, reinterpret_cast<CUdeviceptr>(d_params.ptr),
+      // p is stack-local but stays alive until the stream sync below, so the async copy is safe.
+      ows.d_params.alloc(sizeof(LaunchParams));
+      cuda_check(cudaMemcpyAsync(ows.d_params.ptr, &p, sizeof(p), cudaMemcpyHostToDevice, ows.stream),
+                 "cudaMemcpyAsync params");
+      optix_check(optixLaunch(pipeline_, ows.stream, reinterpret_cast<CUdeviceptr>(ows.d_params.ptr),
                               sizeof(LaunchParams), &sbt_, num_rays_, static_cast<unsigned>(n), 1),
                   "optixLaunch");
-      cuda_check(cudaDeviceSynchronize(), "cudaDeviceSynchronize");
+      ows.h_hits.reserve(n * sizeof(unsigned));
+      cuda_check(cudaMemcpyAsync(ows.h_hits.ptr, ows.d_out.ptr, n * sizeof(unsigned),
+                                 cudaMemcpyDeviceToHost, ows.stream),
+                 "cudaMemcpyAsync D2H");
+      cuda_check(cudaStreamSynchronize(ows.stream), "cudaStreamSynchronize");
 
-      std::vector<unsigned> hits(n, 0);
-      cuda_check(
-          cudaMemcpy(hits.data(), ows.d_out.ptr, n * sizeof(unsigned), cudaMemcpyDeviceToHost),
-          "cudaMemcpy D2H");
+      const unsigned *hits = ows.h_hits.as<unsigned>();
       for (std::size_t c = 0; c < n; ++c)
         result[c] = hits[c] ? 1 : 0;
     }
