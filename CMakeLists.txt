@@ -159,6 +159,16 @@ if(QUEVEDOMP_BUILD_EXAMPLES)
   add_subdirectory(examples/cpp)
 endif()
 
+# ---- Benchmarks (Task 2b.2 latency profile) ----------------------------------------------
+# FCL-vs-OptiX collision-query latency/throughput. Only when the OptiX backend is built; run under
+# the bench-optix preset (Release, sanitizers OFF) for meaningful numbers.
+if(QUEVEDOMP_WITH_OPTIX)
+  add_executable(bench_collision benchmarks/bench_collision.cpp)
+  target_link_libraries(bench_collision PRIVATE quevedomp::quevedomp)
+  target_compile_definitions(bench_collision
+    PRIVATE QUEVEDOMP_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+endif()
+
 # ---- Fuzz targets ------------------------------------------------------------------------
 if(QUEVEDOMP_BUILD_FUZZERS)
   add_subdirectory(tests/fuzz)
