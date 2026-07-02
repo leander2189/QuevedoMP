@@ -410,19 +410,42 @@ private:
     bi.triangleArray.flags = flags;
     bi.triangleArray.numSbtRecords = 1;
 
+    // The environment is static and traced by millions of rays, so build for FAST TRACE (not the
+    // default fast-build) and COMPACT the result: a higher-quality, smaller BVH — the single biggest
+    // lever on big-mesh traversal speed. Build time is irrelevant here (one-time, at scene setup).
     OptixAccelBuildOptions ao{};
-    ao.buildFlags = OPTIX_BUILD_FLAG_NONE;
+    ao.buildFlags = OPTIX_BUILD_FLAG_PREFER_FAST_TRACE | OPTIX_BUILD_FLAG_ALLOW_COMPACTION;
     ao.operation = OPTIX_BUILD_OPERATION_BUILD;
     OptixAccelBufferSizes sizes;
     optix_check(optixAccelComputeMemoryUsage(ctx_, &ao, &bi, 1, &sizes), "accel mem usage");
-    DeviceBuffer temp;
+    DeviceBuffer temp, uncompacted;
     temp.alloc(sizes.tempSizeInBytes);
-    d_gas_.alloc(sizes.outputSizeInBytes);
+    uncompacted.alloc(sizes.outputSizeInBytes);
+
+    // Emit the compacted size from the build, then compact the BVH into the persistent d_gas_.
+    DeviceBuffer d_compacted_size;
+    d_compacted_size.alloc(sizeof(std::uint64_t));
+    OptixAccelEmitDesc emit{};
+    emit.type = OPTIX_PROPERTY_TYPE_COMPACTED_SIZE;
+    emit.result = reinterpret_cast<CUdeviceptr>(d_compacted_size.ptr);
+
+    OptixTraversableHandle built = 0;
     optix_check(optixAccelBuild(ctx_, nullptr, &ao, &bi, 1, reinterpret_cast<CUdeviceptr>(temp.ptr),
-                                sizes.tempSizeInBytes, reinterpret_cast<CUdeviceptr>(d_gas_.ptr),
-                                sizes.outputSizeInBytes, &gas_, nullptr, 0),
+                                sizes.tempSizeInBytes,
+                                reinterpret_cast<CUdeviceptr>(uncompacted.ptr),
+                                sizes.outputSizeInBytes, &built, &emit, 1),
                 "optixAccelBuild");
     cuda_check(cudaDeviceSynchronize(), "sync after accel build");
+
+    std::uint64_t compacted_size = 0;
+    cuda_check(cudaMemcpy(&compacted_size, d_compacted_size.ptr, sizeof(compacted_size),
+                          cudaMemcpyDeviceToHost),
+               "read compacted size");
+    d_gas_.alloc(compacted_size);
+    optix_check(optixAccelCompact(ctx_, nullptr, built, reinterpret_cast<CUdeviceptr>(d_gas_.ptr),
+                                  compacted_size, &gas_),
+                "optixAccelCompact");
+    cuda_check(cudaDeviceSynchronize(), "sync after accel compact");
   }
 
   void build_robot_rays(const MeshSources &meshes) {
