@@ -167,6 +167,13 @@ if(QUEVEDOMP_WITH_OPTIX)
   target_link_libraries(bench_collision PRIVATE quevedomp::quevedomp)
   target_compile_definitions(bench_collision
     PRIVATE QUEVEDOMP_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+
+  # DTC-cell benchmark: reuses the shared harness + the tests/support DTC scene builder.
+  add_executable(bench_dtc benchmarks/bench_dtc.cpp)
+  target_link_libraries(bench_dtc PRIVATE quevedomp::quevedomp)
+  target_include_directories(bench_dtc PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/support)
+  target_compile_definitions(bench_dtc
+    PRIVATE QUEVEDOMP_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
 endif()
 
 # ---- Fuzz targets ------------------------------------------------------------------------
