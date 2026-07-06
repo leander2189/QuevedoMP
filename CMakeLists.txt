@@ -139,6 +139,14 @@ if(QUEVEDOMP_WITH_OPTIX)
   add_dependencies(quevedomp quevedomp_optix_ptx)
   target_include_directories(quevedomp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/collision/optix)
   target_link_libraries(quevedomp PRIVATE OptiX::OptiX CUDA::cudart)
+
+  # OpenMP parallelizes the host FK / transform-fill loop in the OptiX backend's query_batch
+  # (one fk_all per config, disjoint output slices). Optional: without it the loop runs serially.
+  find_package(OpenMP QUIET)
+  if(OpenMP_CXX_FOUND)
+    target_link_libraries(quevedomp PRIVATE OpenMP::OpenMP_CXX)
+    message(STATUS "OpenMP: parallel host FK in the OptiX backend")
+  endif()
   target_compile_definitions(quevedomp
     PRIVATE QUEVEDOMP_WITH_OPTIX
             QUEVEDOMP_OPTIX_PTX_PATH="$<TARGET_OBJECTS:quevedomp_optix_ptx>")

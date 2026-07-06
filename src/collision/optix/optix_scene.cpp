@@ -2,10 +2,11 @@
 //
 // Robot-vs-environment runs on the GPU: the environment is one static triangle GAS; each robot
 // collision-mesh triangle EDGE becomes a link-local test ray. Per query_batch the host FKs every
-// config, uploads one block of per-(config,link) transforms, and issues ONE batched launch that
+// config ONCE (OpenMP-parallel across configs; the same pass also poses the containment interior
+// points), uploads one block of per-(config,link) transforms, and issues ONE batched launch that
 // transforms each ray on the fly and traces the GAS (terminate-on-first-hit), atomicOr'ing a hit
 // into the config's result. Robot-vs-self runs on the CPU via an internal FCL scene (ADR-014
-// item 4), OR'd into the same booleans.
+// item 4) WHILE the GPU traces (the stream sync comes after it), OR'd into the same booleans.
 //
 // Containment (ADR-012): surface rays miss a link fully inside an obstacle, so a per-link parity-ray
 // check (shared EnvContainment, CPU) runs alongside — analytic inside-tests for primitive solids,
@@ -18,6 +19,7 @@
 // make_static_scene; no post-build add/move/remove yet).
 #include <cstdint>
 #include <cstdlib>
+#include <exception>
 #include <fstream>
 #include <limits>
 #include <map>
@@ -221,53 +223,89 @@ public:
 
     std::vector<std::uint8_t> result(n, 0);
 
-    // ---- GPU robot-vs-environment ----
-    // Everything below is enqueued on the workspace's own stream from pinned staging and joined by a
-    // single cudaStreamSynchronize — no per-op device sync, no per-call cudaMalloc/Free.
-    if (num_rays_ > 0 && gas_ != 0 && n > 0) {
-      // Broadphase robot-link cull (ADR-014 prototype). OPT-IN via QUEVEDOMP_OPTIX_CULL: it wins only
-      // when a localized obstacle lets many links cull; on a workspace-spanning obstacle its host +
-      // per-ray overhead exceeds the traces it skips, so it is off (and never computed) by default.
-      static const bool cull_enabled = std::getenv("QUEVEDOMP_OPTIX_CULL") != nullptr;
+    const bool do_gpu = num_rays_ > 0 && gas_ != 0 && n > 0;
+    const bool do_contain = containment_.any() && !link_interior_.empty() && n > 0;
 
-      const std::size_t slots = ray_link_slots_.size();
-      const std::size_t xform_floats = n * slots * 12;
-      ows.h_xform.reserve(xform_floats * sizeof(float));
-      float *xform = ows.h_xform.as<float>();
-      unsigned char *cull = nullptr;
+    // Broadphase robot-link cull (ADR-014 prototype). OPT-IN via QUEVEDOMP_OPTIX_CULL: it wins only
+    // when a localized obstacle lets many links cull; on a workspace-spanning obstacle its host +
+    // per-ray overhead exceeds the traces it skips, so it is off (and never computed) by default.
+    static const bool cull_enabled = std::getenv("QUEVEDOMP_OPTIX_CULL") != nullptr;
+
+    const std::size_t slots = ray_link_slots_.size();
+    const std::size_t n_int = link_interior_.size();
+
+    // ---- host FK pass: fills the GPU transform block (+ cull mask) AND the containment interior
+    // points from ONE fk_all per config. Configs are independent and write disjoint slices, so the
+    // loop parallelizes across configs (OpenMP when available).
+    float *xform = nullptr;
+    unsigned char *cull = nullptr;
+    if (do_gpu) {
+      ows.h_xform.reserve(n * slots * 12 * sizeof(float));
+      xform = ows.h_xform.as<float>();
       if (cull_enabled) {
         ows.h_cull.reserve(n * slots); // one byte per (config, slot): 1 => cull this link's rays
         cull = ows.h_cull.as<unsigned char>();
       }
-      for (std::size_t c = 0; c < n; ++c) {
-        const std::vector<Transform> poses = fk_all(model, qs[c]);
-        for (std::size_t s = 0; s < slots; ++s) {
-          const Transform &P = poses[ray_link_slots_[s]];
-          const Eigen::Matrix4d m = P.matrix();
-          float *T = xform + (c * slots + s) * 12;
-          for (int r = 0; r < 3; ++r)
-            for (int col = 0; col < 4; ++col)
-              T[r * 4 + col] = static_cast<float>(m(r, col));
+    }
+    std::vector<Eigen::Vector3d> interior_world; // (config, interior-pt) world positions
+    if (do_contain)
+      interior_world.resize(n * n_int);
 
-          if (!cull_enabled)
-            continue;
-          // Pose the link-local ray AABB (its 8 corners) into the world and test it against the
-          // environment AABB. No overlap => none of this link's rays can hit => cull.
-          Eigen::Vector3f wlo = Eigen::Vector3f::Constant(std::numeric_limits<float>::infinity());
-          Eigen::Vector3f whi = Eigen::Vector3f::Constant(-std::numeric_limits<float>::infinity());
-          for (int k = 0; k < 8; ++k) {
-            const Eigen::Vector3d corner((k & 1) ? slot_hi_[s].x() : slot_lo_[s].x(),
-                                         (k & 2) ? slot_hi_[s].y() : slot_lo_[s].y(),
-                                         (k & 4) ? slot_hi_[s].z() : slot_lo_[s].z());
-            const Eigen::Vector3f w = (P * corner).cast<float>();
-            wlo = wlo.cwiseMin(w);
-            whi = whi.cwiseMax(w);
+    if (do_gpu || do_contain) {
+      std::exception_ptr fk_error; // fk_all may throw; exceptions must not escape the omp region
+      // if(n >= 64): below that, OpenMP fork/join overhead (~100s of µs) swamps the FK it saves —
+      // small batches (the RRT single-config probe) run serially on the calling thread.
+#pragma omp parallel for schedule(static) if (n >= 64)
+      for (long long ci = 0; ci < static_cast<long long>(n); ++ci) {
+        try {
+          const std::size_t c = static_cast<std::size_t>(ci);
+          const std::vector<Transform> poses = fk_all(model, qs[c]);
+          for (std::size_t s = 0; do_gpu && s < slots; ++s) {
+            const Transform &P = poses[ray_link_slots_[s]];
+            const Eigen::Matrix4d &m = P.isometry().matrix();
+            float *T = xform + (c * slots + s) * 12;
+            for (int r = 0; r < 3; ++r)
+              for (int col = 0; col < 4; ++col)
+                T[r * 4 + col] = static_cast<float>(m(r, col));
+
+            if (!cull_enabled)
+              continue;
+            // Pose the link-local ray AABB (its 8 corners) into the world and test it against the
+            // environment AABB. No overlap => none of this link's rays can hit => cull.
+            Eigen::Vector3f wlo = Eigen::Vector3f::Constant(std::numeric_limits<float>::infinity());
+            Eigen::Vector3f whi = Eigen::Vector3f::Constant(-std::numeric_limits<float>::infinity());
+            for (int k = 0; k < 8; ++k) {
+              const Eigen::Vector3d corner((k & 1) ? slot_hi_[s].x() : slot_lo_[s].x(),
+                                           (k & 2) ? slot_hi_[s].y() : slot_lo_[s].y(),
+                                           (k & 4) ? slot_hi_[s].z() : slot_lo_[s].z());
+              const Eigen::Vector3f w = (P * corner).cast<float>();
+              wlo = wlo.cwiseMin(w);
+              whi = whi.cwiseMax(w);
+            }
+            const bool overlap = (wlo.array() <= env_hi_.array()).all() &&
+                                 (env_lo_.array() <= whi.array()).all();
+            cull[c * slots + s] = overlap ? 0 : 1;
           }
-          const bool overlap = (wlo.array() <= env_hi_.array()).all() &&
-                               (env_lo_.array() <= whi.array()).all();
-          cull[c * slots + s] = overlap ? 0 : 1;
+          for (std::size_t k = 0; do_contain && k < n_int; ++k)
+            interior_world[c * n_int + k] =
+                poses[link_interior_[k].first] * link_interior_[k].second;
+        } catch (...) {
+#pragma omp critical
+          if (!fk_error)
+            fk_error = std::current_exception();
         }
       }
+      if (fk_error)
+        std::rethrow_exception(fk_error);
+    }
+
+    // ---- GPU robot-vs-environment ----
+    // Everything below is enqueued on the workspace's own stream from pinned staging and joined by a
+    // single cudaStreamSynchronize — no per-op device sync, no per-call cudaMalloc/Free. The sync is
+    // deferred past the CPU self-collision pass below, so the CPU work overlaps the GPU trace.
+    LaunchParams p{}; // function-scope: must outlive its async H2D copy (joined at the sync below)
+    if (do_gpu) {
+      const std::size_t xform_floats = n * slots * 12;
       ows.d_xform.alloc(xform_floats * sizeof(float));
       cuda_check(cudaMemcpyAsync(ows.d_xform.ptr, xform, xform_floats * sizeof(float),
                                  cudaMemcpyHostToDevice, ows.stream),
@@ -282,7 +320,6 @@ public:
       cuda_check(cudaMemsetAsync(ows.d_out.ptr, 0, n * sizeof(unsigned), ows.stream),
                  "cudaMemsetAsync out");
 
-      LaunchParams p{};
       p.handle = gas_;
       p.ray_origin = d_ray_origin_.as<float>();
       p.ray_dir = d_ray_dir_.as<float>();
@@ -295,7 +332,6 @@ public:
       p.out = ows.d_out.as<unsigned>();
       p.link_cull = cull_enabled ? ows.d_cull.as<unsigned char>() : nullptr;
 
-      // p is stack-local but stays alive until the stream sync below, so the async copy is safe.
       ows.d_params.alloc(sizeof(LaunchParams));
       cuda_check(cudaMemcpyAsync(ows.d_params.ptr, &p, sizeof(p), cudaMemcpyHostToDevice, ows.stream),
                  "cudaMemcpyAsync params");
@@ -306,31 +342,36 @@ public:
       cuda_check(cudaMemcpyAsync(ows.h_hits.ptr, ows.d_out.ptr, n * sizeof(unsigned),
                                  cudaMemcpyDeviceToHost, ows.stream),
                  "cudaMemcpyAsync D2H");
-      cuda_check(cudaStreamSynchronize(ows.stream), "cudaStreamSynchronize");
-
-      const unsigned *hits = ows.h_hits.as<unsigned>();
-      for (std::size_t c = 0; c < n; ++c)
-        result[c] = hits[c] ? 1 : 0;
+      // NO sync yet: the CPU self-collision pass below runs while the GPU traces (ADR-014 item 4).
     }
 
-    // ---- CPU robot-vs-self (FCL, honoring the ACM) ----
+    // ---- CPU robot-vs-self (FCL, honoring the ACM) — overlaps the in-flight GPU launch ----
+    BatchResult self;
     if (opts.check_self_collision) {
       QueryOptions self_opts;
       self_opts.check_self_collision = true;
       self_opts.distance = false;
-      const BatchResult self = fcl_self_->query_batch(robot, qs, self_opts, *ows.fcl_ws_);
-      for (std::size_t c = 0; c < n && c < self.in_collision.size(); ++c)
-        result[c] = (result[c] || self.in_collision[c]) ? 1 : 0;
+      self = fcl_self_->query_batch(robot, qs, self_opts, *ows.fcl_ws_);
     }
 
-    // ---- CPU containment (ADR-012): a link fully inside an obstacle casts no surface ray ----
-    if (containment_.any() && !link_interior_.empty()) {
+    // ---- join the GPU and merge ----
+    if (do_gpu) {
+      cuda_check(cudaStreamSynchronize(ows.stream), "cudaStreamSynchronize");
+      const unsigned *hits = ows.h_hits.as<unsigned>();
+      for (std::size_t c = 0; c < n; ++c)
+        result[c] = hits[c] ? 1 : 0;
+    }
+    for (std::size_t c = 0; c < n && c < self.in_collision.size(); ++c)
+      result[c] = (result[c] || self.in_collision[c]) ? 1 : 0;
+
+    // ---- CPU containment (ADR-012): a link fully inside an obstacle casts no surface ray.
+    // Interior points were posed by the FK pass above; only the inside() tests remain.
+    if (do_contain) {
       for (std::size_t c = 0; c < n; ++c) {
         if (result[c])
           continue;
-        const std::vector<Transform> poses = fk_all(model, qs[c]);
-        for (const auto &[li, p] : link_interior_) {
-          if (containment_.inside(poses[li] * p)) {
+        for (std::size_t k = 0; k < n_int; ++k) {
+          if (containment_.inside(interior_world[c * n_int + k])) {
             result[c] = 1;
             break;
           }
