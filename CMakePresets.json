@@ -113,6 +113,23 @@
         "QUEVEDOMP_WITH_OPTIX": "ON",
         "QUEVEDOMP_ENABLE_SANITIZERS": "OFF"
       }
+    },
+    {
+      "name": "viz-optix",
+      "displayName": "Release, CUDA + OptiX + rerun viz (DTC visualization)",
+      "description": "OptiX backend + rerun.io visualization together (dtc_visualize). Sanitizers OFF (the prebuilt rerun/Arrow libs are not instrumented); pulls the rerun C++ SDK via FetchContent like dev-viz.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/viz-optix",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "QUEVEDOMP_WITH_CUDA": "ON",
+        "QUEVEDOMP_WITH_OPTIX": "ON",
+        "QUEVEDOMP_WITH_RERUN": "ON",
+        "QUEVEDOMP_ENABLE_SANITIZERS": "OFF"
+      },
+      "environment": {
+        "CMAKE_POLICY_VERSION_MINIMUM": "3.5"
+      }
     }
   ],
   "buildPresets": [
@@ -124,7 +141,9 @@
     { "name": "coverage",  "configurePreset": "coverage" },
     { "name": "fuzz",      "configurePreset": "fuzz" },
     { "name": "release",   "configurePreset": "release" },
-    { "name": "bench-optix", "configurePreset": "bench-optix" }
+    { "name": "bench-optix", "configurePreset": "bench-optix" },
+    { "name": "viz-optix", "configurePreset": "viz-optix",
+      "environment": { "CMAKE_POLICY_VERSION_MINIMUM": "3.5" } }
   ],
   "testPresets": [
     {
