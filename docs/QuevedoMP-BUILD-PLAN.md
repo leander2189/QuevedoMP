@@ -629,6 +629,14 @@ Options (user decision — changes global WSL behavior):
 >   no whole-device sync. `src/collision/optix/optix_scene.cpp`. Verify:
 >   `OptixBackend.ReusedWorkspaceVaryingBatchSizesAgreeWithFcl` (one workspace reused across 32→5→20
 >   batches, OptiX==FCL each time); full dev-optix 121/121.
+> - **Query pipelining DONE (2026-07-06, `4c16b1f`):** one host FK pass per config now feeds BOTH
+>   the GPU transform block and the ADR-012 containment interior points (containment no longer
+>   re-runs `fk_all`); the CPU self-collision pass runs **while the GPU traces** (stream sync moved
+>   after it — what ADR-014 item 4 intended); the FK/transform-fill/cull loop is OpenMP-parallel
+>   across configs, gated `if(n >= 64)` so single-config probes keep serial latency. DTC bench:
+>   cull-ON robot-vs-env 35.6→23.1 ms @10k (1.32×→2.04× vs FCL); full query @1k 25.0→16.3 ms —
+>   now at FCL parity and **bound by the CPU self pass** (GPU fully hidden). Algorithm explainer:
+>   `docs/optix-collision.md`. Verify: 125/125, agreement 0/2000.
 > - **Deferred (follow-ups within 2b.1 before Phase 2b exit):** ADR-013 **margins/padding**;
 >   **distance/witness** (throws — FCL-authoritative per §4.5); **sphere/cylinder env GAS tessellation**
 >   (containment already handles them analytically; needs a decision — fine conservative tessellation
@@ -665,6 +673,32 @@ Options (user decision — changes global WSL behavior):
   loses below batch≈50, that bounds where `BackendHint::Auto` flips backends.
 - **Phase 2b EXIT:** spec §6 Phase 2b DoD + small-batch latency recorded; benchmarks tracked (alert >10% regression). Update memory.
 
+### Task 2b.3 — Backend performance follow-ups (2026-07-06 perf review)
+Prioritized backlog from the post-pipelining review (numbers: DTC bench, `docs/optix-collision.md`
+"Where the time goes"). None block Phase 2b exit; pull them in when the profile says so.
+1. **Hybrid `BackendHint::Auto` dispatch by batch size** (afternoon-sized): route small batches
+   (< ~200 configs) to FCL, large to OptiX — `OptixScene` already owns an internal FCL scene.
+   Every batch size then gets whichever backend wins it; the 2b.2 latency profile fixes the
+   crossover constant.
+2. **Raygen per-config early abort** (afternoon-sized): first line of `__raygen__rg`,
+   `if (params.out[c]) return;` — once any ray of a config hits, its remaining rays skip the
+   trace. Biggest payoff in cluttered scenes (high collision fraction).
+3. **Parallel CPU self-collision** (day-sized): the full query is now bound by the FCL self pass
+   (~16 µs/config). Partition the batch across OpenMP threads, one `FclWorkspace` per thread
+   (same pattern as the FK loop). Compounding option: **convex hulls for self-pairs** (ADR-014
+   already anticipates this) — self-checks don't need exact meshes.
+4. **Ray-count reduction**: decimated (or hull) robot collision meshes shrink `num_rays` 10–100×
+   — the constant factor every trace multiplies. Natural extension: two-tier proxy/exact rays
+   (cheap proxy pass clears most configs; exact rays only for near-misses).
+5. **Device-side broadphase cull, default-on**: move the 8-corner link-AABB-vs-env-AABB test into
+   a pre-kernel (transforms are already uploaded) — deletes the host overhead that makes the cull
+   opt-in (`QUEVEDOMP_OPTIX_CULL`) today.
+6. **CUDA graphs** for the memcpy→memset→launch→memcpy sequence: cuts per-batch API overhead
+   (~50–100 µs), pushing the GPU crossover toward smaller batches.
+7. **FCL distance-path pruning**: skip pairs whose AABB lower-bound distance exceeds the current
+   best (or `max_distance`); early-out when only `safety_margin` gating is needed. Matters once
+   distance queries sit inside a smoothing/optimization loop (see Task 3.3b).
+
 ---
 
 ## Phase 3a — RRT pipeline + the goal gate (amendment M5: capture moved to 3b)
@@ -680,11 +714,38 @@ Options (user decision — changes global WSL behavior):
   stay as fat as correctness allows. Keep the validation call sites few and explicit: a lazy
   edge-validation variant (accumulate candidate edges, validate as one batch) is a planned
   Phase-3a-exit experiment, not a rewrite.
+- **(2026-07-06 perf review) The algorithm is a means, not the deliverable** — the goal is fast,
+  smooth, logical trajectories in complex environments; RRT-Connect is the baseline, not a
+  commitment. Concretely:
+  - **Batch across edges, not within one edge:** sample k candidate extensions and validate all
+    their edges as one `query_batch` — one RRT edge (10–100 configs) sits below the GPU
+    crossover (~a few hundred); k edges together clear it. Batch-shaped planners (BIT*-style
+    batched informed search, lazy PRM variants) are in scope if they feed the backend better.
+  - **Lazy edge evaluation:** build optimistically, collision-check only edges on a candidate
+    path — order-of-magnitude fewer queries in clutter, and the surviving checks are fat batches.
+  - **Bisection sample ordering in `check_edge`** (t = 0, 1, ½, ¼, ¾…) + chunked submission
+    (endpoints, then doubling): colliding edges detected after far fewer samples; gives the CPU
+    backend an early-out without hurting the GPU path.
 - **Verify:** finds a known 2D solution in < N nodes; cross-check vs OMPL RRT-Connect on the same problem.
 
 ### Task 3.3 — `ShortcutSmoother`
 - Iterative shortcut.
 - **Verify:** smoother output is **still collision-free** and no longer than input.
+
+### Task 3.3b — (NEW, 2026-07-06 perf review) GPU environment SDF for clearance-aware smoothing
+- Sampling planners give *feasible*; **smooth and logical** comes from an optimization pass that
+  wants clearance **gradients**, which brute-force FCL `distance()` is far too slow to serve
+  inside a loop. Since the environment is quasi-static (the same assumption the GAS design
+  exploits), precompute a **voxel SDF of the environment on the GPU once** at scene build,
+  decompose robot links into spheres, and clearance + gradient per config becomes a handful of
+  trilinear lookups (the cuRobo recipe). Enables CHOMP/TrajOpt-style post-smoothing (or a
+  gradient-informed shortcut) far beyond what Task 3.3 alone gives.
+- Scope decision when reached: SDF resolution/memory budget, exact-vs-sphere robot tradeoff
+  (ADR-013 alternatives already sketch sphere approximation), and whether it lands as a
+  `CollisionScene` extension or a separate `ClearanceField` type. Raise as a §12 decision.
+- **Verify:** SDF distance vs FCL `distance()` within voxel-resolution tolerance on the B.1
+  fixtures; smoother using it produces collision-free output with measurably higher min-clearance
+  than Task 3.3's shortcut alone.
 
 ### Task 3.4 — `ToppRaParameterization`
 - Time-optimal under joint + TCP vel/acc.
