@@ -1,13 +1,11 @@
-// DTC scene fixtures (Phase A of the DTC benchmark): the rbrobout robot — a UR10e arm on an Ewellix
-// 900 mm vertical lift with a tool-changer tip — parses from the flattened URDF, resolves ALL of its
-// collision meshes (UR10e collision STLs via package://ur_description, Ewellix lift STLs via
-// package://dtc_test), and FKs across its prismatic + revolute chain. The work-object environment,
-// the attached end-effector mesh, and the FCL-vs-OptiX benchmark land in later phases.
+// DTC scene (Phase A/B of the DTC benchmark): the rbrobout robot — a UR10e arm on an Ewellix 900 mm
+// vertical lift, with the ee_hilok end-effector baked onto the tool-changer tip — loads and resolves
+// every collision mesh; the work-object environment builds; the SRDF allowed-collision matrix loads;
+// and the FCL and OptiX backends agree config-for-config on robot-vs-environment. The benchmark
+// (Phase C) and rerun visualization (Phase D) build on this same fixture via tests/support/dtc_scene.
 #include <gtest/gtest.h>
 
-#include <fstream>
-#include <sstream>
-#include <string>
+#include <cstddef>
 #include <vector>
 
 #include "quevedomp/collision/collision_scene.hpp"
@@ -15,36 +13,28 @@
 #include "quevedomp/robot/robot_instance.hpp"
 #include "quevedomp/robot/robot_model.hpp"
 
+#include "dtc_scene.hpp"
+
 using namespace quevedomp;
 using namespace quevedomp::collision;
 
 namespace {
-
 std::string fixtures() { return std::string(QUEVEDOMP_FIXTURE_DIR); }
 
-std::string read_text(const std::string &path) {
-  std::ifstream f(path);
-  std::ostringstream ss;
-  ss << f.rdbuf();
-  return ss.str();
+double collision_fraction(const std::vector<std::uint8_t> &v) {
+  std::size_t c = 0;
+  for (std::uint8_t x : v)
+    c += x ? 1 : 0;
+  return v.empty() ? 0.0 : static_cast<double>(c) / static_cast<double>(v.size());
 }
-
-// The two mesh packages the flattened rbrobout URDF references.
-MeshSources dtc_meshes() {
-  const std::string m = fixtures() + "/robots/meshes/";
-  return MeshSources{{{"ur_description", m + "ur_description"}, {"dtc_test", m + "dtc_test"}}, ""};
-}
-
 } // namespace
 
 TEST(DtcScene, RobotLoadsAndResolvesCollisionMeshes) {
-  const auto model = RobotModel::from_urdf(read_text(fixtures() + "/robots/rbrobout.urdf"));
+  const auto model = dtc::load_robot(fixtures());
 
   // complete_chain = Ewellix prismatic lift (1) + UR10e revolute arm (6).
   EXPECT_EQ(model->dof(), 7u);
 
-  // Exactly one movable prismatic joint (the lift), and it carries position limits so random-pose
-  // sampling in the benchmark has a finite range.
   int prismatic = 0, revolute = 0;
   for (const Joint &j : model->joints()) {
     if (j.type == JointType::Prismatic) {
@@ -58,21 +48,80 @@ TEST(DtcScene, RobotLoadsAndResolvesCollisionMeshes) {
   EXPECT_EQ(prismatic, 1);
   EXPECT_EQ(revolute, 6);
 
-  const RobotInstance robot(model);
-
-  // Building the FCL scene resolves + loads EVERY robot collision mesh (it throws on any unresolved
-  // or unloadable mesh — never silently skipped). This is the real Phase-A gate.
+  // Building the FCL scene resolves + loads EVERY robot collision mesh (UR10e + Ewellix + the baked
+  // ee_hilok), throwing on any failure — the real gate.
   std::unique_ptr<CollisionScene> scene;
   ASSERT_NO_THROW(scene = make_static_scene(model, SceneDescription{}, BackendHint::ForceCpuFcl,
-                                            dtc_meshes()));
+                                            dtc::meshes(fixtures())));
+  const JointPosition q = JointPosition::Zero(static_cast<int>(model->dof()));
+  EXPECT_EQ(fk_all(*model, q).size(), model->num_links());
+}
+
+TEST(DtcScene, SrdfAcmLoads) {
+  const auto model = dtc::load_robot(fixtures());
+  RobotInstance robot(model);
+  const int n = dtc::load_srdf_acm(dtc::read_text(fixtures() + "/robots/rbrobout.srdf"), robot.acm());
+  EXPECT_GT(n, 0);
+  EXPECT_EQ(robot.acm().size(), static_cast<std::size_t>(n));
+  // A representative adjacent pair from the SRDF must be allowed.
+  EXPECT_TRUE(robot.acm().is_allowed("base_link", "ewellix_lift_base_link"));
+}
+
+TEST(DtcScene, WorkObjectEnvBuildsWithCollisionMix) {
+  const auto model = dtc::load_robot(fixtures());
+  const RobotInstance robot(model);
+  const SceneDescription env = dtc::make_env(fixtures());
+  EXPECT_EQ(env.objects.size(), 4u); // work object + 3 markers
+
+  const auto scene = make_static_scene(model, env, BackendHint::ForceCpuFcl, dtc::meshes(fixtures()));
   const auto ws = scene->make_workspace();
 
-  // FK across the full chain (including the prismatic lift) yields one transform per link.
-  const JointPosition q = JointPosition::Zero(static_cast<int>(model->dof()));
-  const std::vector<Transform> tf = fk_all(*model, q);
-  EXPECT_EQ(tf.size(), model->num_links());
-
+  Rng rng(7);
+  const std::vector<JointPosition> qs = dtc::sample_configs(*model, rng, 1000);
   QueryOptions opts;
-  opts.check_self_collision = false; // ACM comes from the SRDF in a later phase; skip self here
-  EXPECT_NO_THROW((void)scene->query(robot, q, opts, *ws));
+  opts.check_self_collision = false; // isolate robot-vs-work-object
+  const BatchResult r = scene->query_batch(robot, qs, opts, *ws);
+
+  const double frac = collision_fraction(r.in_collision);
+  // The work object must be reachable enough that random poses give a genuine mix (not all-free /
+  // all-collide) — otherwise the benchmark scene is trivial.
+  EXPECT_GT(frac, 0.0) << "no random pose hit the work object — scene unreachable";
+  EXPECT_LT(frac, 1.0) << "every random pose collided — scene degenerate";
+  std::printf("[DtcScene] work-object collision fraction over 1000 random poses: %.3f\n", frac);
+}
+
+// FCL and OptiX must agree config-for-config on robot-vs-environment for the real DTC cell. Runs
+// only under the OptiX build (skipped otherwise).
+TEST(DtcScene, FclOptixAgreeOnWorkObject) {
+  if (!optix_available())
+    GTEST_SKIP() << "OptiX backend not built";
+
+  const auto model = dtc::load_robot(fixtures());
+  const RobotInstance robot(model);
+  const SceneDescription env = dtc::make_env(fixtures());
+  const auto meshes = dtc::meshes(fixtures());
+
+  const auto fcl = make_static_scene(model, env, BackendHint::ForceCpuFcl, meshes);
+  const auto optix = make_static_scene(model, env, BackendHint::ForceOptix, meshes);
+  const auto fcl_ws = fcl->make_workspace();
+  const auto optix_ws = optix->make_workspace();
+
+  Rng rng(11);
+  const std::vector<JointPosition> qs = dtc::sample_configs(*model, rng, 500);
+  QueryOptions opts;
+  opts.check_self_collision = false;
+
+  const BatchResult f = fcl->query_batch(robot, qs, opts, *fcl_ws);
+  const BatchResult o = optix->query_batch(robot, qs, opts, *optix_ws);
+  ASSERT_EQ(f.in_collision.size(), qs.size());
+  ASSERT_EQ(o.in_collision.size(), qs.size());
+
+  int disagree = 0, collide = 0;
+  for (std::size_t i = 0; i < qs.size(); ++i) {
+    disagree += (f.in_collision[i] != o.in_collision[i]) ? 1 : 0;
+    collide += f.in_collision[i] ? 1 : 0;
+  }
+  EXPECT_EQ(disagree, 0) << "FCL vs OptiX disagreed on " << disagree << "/" << qs.size();
+  EXPECT_GT(collide, 0) << "no collisions in sample — agreement is trivial";
+  EXPECT_LT(collide, static_cast<int>(qs.size())) << "all collided — agreement is trivial";
 }

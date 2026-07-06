@@ -562,6 +562,16 @@
         <cylinder length="0.01895" radius="0.0315"/>
       </geometry>
     </collision>
+    <!-- Attached end-effector (ee_hilok), rigidly mounted at the tool-changer tip at identity pose
+         in the tip frame. In the DTC app this is a runtime MoveIt AttachedCollisionObject on this
+         same link; baked here so it flows through both backends as robot collision geometry (and,
+         being on the tip link, self-collision skips it against the tip). -->
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="package://dtc_test/meshes/ee_hilok_collision.stl"/>
+      </geometry>
+    </collision>
   </link>
   <gazebo reference="tool_changer_joint">
     <disableFixedJointLumping>true</disableFixedJointLumping>

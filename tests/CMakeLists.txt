@@ -84,9 +84,13 @@ gtest_discover_tests(test_collision_fcl)
 
 add_executable(test_dtc_scene unit/test_dtc_scene.cpp)
 target_link_libraries(test_dtc_scene PRIVATE quevedomp::quevedomp GTest::gtest_main)
+target_include_directories(test_dtc_scene PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/support)
 target_compile_definitions(test_dtc_scene
   PRIVATE QUEVEDOMP_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
-gtest_discover_tests(test_dtc_scene)
+# The OptiX agreement case exercises the CUDA/OptiX driver, whose internal allocations trip LSan the
+# same way the smoke test does — reuse the same suppressions (harmless for the CPU-only cases).
+gtest_discover_tests(test_dtc_scene PROPERTIES
+  ENVIRONMENT "ASAN_OPTIONS=protect_shadow_gap=0:detect_leaks=0")
 
 add_executable(test_capture_serialize unit/test_capture_serialize.cpp)
 target_link_libraries(test_capture_serialize PRIVATE quevedomp::quevedomp GTest::gtest_main)
