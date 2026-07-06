@@ -49,8 +49,17 @@ void Visualizer::log_pose(const std::string &entity, const Transform &tf) {
 }
 
 void Visualizer::log_mesh(const std::string &entity, const Mesh &mesh, const Transform &tf,
-                          const std::optional<Color> &color) {
-  impl_->rec.log(entity, to_rr(tf));
+                          const std::optional<Color> &color, bool is_static) {
+  // Static scene elements go on rerun's static timeline so they render at every frame; everything
+  // else is logged on the active ("frame") timeline.
+  const auto emit = [&](const auto &archetype) {
+    if (is_static)
+      impl_->rec.log_static(entity, archetype);
+    else
+      impl_->rec.log(entity, archetype);
+  };
+
+  emit(to_rr(tf));
   std::vector<rerun::Position3D> positions;
   positions.reserve(mesh.vertices.size());
   for (const auto &v : mesh.vertices) {
@@ -90,7 +99,7 @@ void Visualizer::log_mesh(const std::string &entity, const Mesh &mesh, const Tra
                                            rerun::Color((*color)[0], (*color)[1], (*color)[2]));
     m3d = std::move(m3d).with_vertex_colors(colors);
   }
-  impl_->rec.log(entity, m3d);
+  emit(m3d);
 }
 
 void Visualizer::log_points(const std::string &entity, const std::vector<Eigen::Vector3d> &points,
@@ -167,7 +176,7 @@ void Visualizer::spawn() {}
 void Visualizer::set_frame(int64_t) {}
 void Visualizer::log_pose(const std::string &, const Transform &) {}
 void Visualizer::log_mesh(const std::string &, const Mesh &, const Transform &,
-                          const std::optional<Color> &) {}
+                          const std::optional<Color> &, bool) {}
 void Visualizer::log_points(const std::string &, const std::vector<Eigen::Vector3d> &,
                             const Color &, float) {}
 void Visualizer::log_segments(const std::string &,

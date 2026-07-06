@@ -45,9 +45,11 @@ public:
 
   // Entity paths are rerun's hierarchical names, e.g. "world/ur5". All are no-ops when disabled.
   void log_pose(const std::string &entity, const Transform &tf);
-  // `color`, if given, tints the whole mesh (useful to flag a colliding link red).
+  // `color`, if given, tints the whole mesh (useful to flag a colliding link red). Set `is_static`
+  // for scene elements that never move (e.g. the environment): they are logged on rerun's static
+  // timeline so they show at every frame, not just the one that happened to be active when logged.
   void log_mesh(const std::string &entity, const Mesh &mesh, const Transform &tf = Transform{},
-                const std::optional<Color> &color = std::nullopt);
+                const std::optional<Color> &color = std::nullopt, bool is_static = false);
   // Points at world positions, one shared `color` and `radius` (m). A sphere obstacle renders as a
   // single point with radius = its radius; collision witness points use this too.
   void log_points(const std::string &entity, const std::vector<Eigen::Vector3d> &points,

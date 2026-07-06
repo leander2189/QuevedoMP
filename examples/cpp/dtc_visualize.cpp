@@ -106,10 +106,12 @@ int main(int argc, char **argv) {
   const std::string rrd = out_dir + "/dtc_collision.rrd";
   viz.save(rrd);
 
-  // Static environment (logged once): the work object as a mesh, markers in a distinct colour.
+  // Static environment (logged once, on rerun's static timeline so it shows at every frame): the
+  // work object as a mesh, markers in a distinct colour.
   for (const SceneObject &o : env.objects)
     if (const Mesh *m = std::get_if<Mesh>(&o.geometry))
-      viz.log_mesh("world/env/" + o.id, *m, o.pose, o.id == "work_object" ? kEnv : kMarker);
+      viz.log_mesh("world/env/" + o.id, *m, o.pose, o.id == "work_object" ? kEnv : kMarker,
+                   /*is_static=*/true);
 
   for (std::size_t k = 0; k < frames.size(); ++k) {
     const JointPosition &q = pool[frames[k]];
