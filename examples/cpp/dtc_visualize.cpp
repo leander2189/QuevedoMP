@@ -3,7 +3,7 @@
 // environment; each pose is classified by the OptiX boolean and the whole robot is tinted red
 // (collision) or grey (free). The work object + fiducial markers are drawn once for context.
 //
-//   Usage: dtc_visualize [OUT_DIR=.]
+//   Usage: dtc_visualize [OUT_DIR=.] [mt_part|inlet]   (default scene mt_part)
 //
 // Build under the viz-optix preset (WITH_RERUN=ON + WITH_OPTIX=ON) to get dtc_collision.rrd, then
 // open it in the rerun viewer. With WITH_RERUN=OFF the Visualizer is a no-op and nothing is written;
@@ -73,11 +73,13 @@ std::vector<MeshPiece> load_robot_pieces(const RobotModel &model, const MeshSour
 int main(int argc, char **argv) {
   const std::string fx = QUEVEDOMP_FIXTURE_DIR;
   const std::string out_dir = argc > 1 ? argv[1] : ".";
+  const bool inlet = argc > 2 && std::string(argv[2]) == "inlet";
+  const dtc::Scene scene = inlet ? dtc::Scene::Inlet : dtc::Scene::MtPart;
 
-  const auto model = dtc::load_robot(fx);
+  const auto model = dtc::load_robot(fx, scene);
   const RobotInstance robot(model);
-  const auto meshes = dtc::meshes(fx);
-  const SceneDescription env = dtc::make_env(fx);
+  const auto meshes = dtc::meshes(fx, scene);
+  const SceneDescription env = dtc::make_env(fx, scene);
 
   const bool gpu = optix_available();
   const auto scene = make_static_scene(model, env, gpu ? BackendHint::ForceOptix : BackendHint::ForceCpuFcl, meshes);
@@ -103,7 +105,7 @@ int main(int argc, char **argv) {
     frames.push_back(free[i]);
 
   Visualizer viz("quevedomp/dtc");
-  const std::string rrd = out_dir + "/dtc_collision.rrd";
+  const std::string rrd = out_dir + (inlet ? "/dtc_collision_inlet.rrd" : "/dtc_collision_mt_part.rrd");
   viz.save(rrd);
 
   // Static environment (logged once, on rerun's static timeline so it shows at every frame): the

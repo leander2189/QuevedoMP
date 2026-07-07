@@ -25,6 +25,10 @@
 
 namespace quevedomp::dtc {
 
+// The two DTC cells this fixture set supports. MtPart: rbrobout (UR10e + 900 mm lift, ee_hilok) vs
+// mesh.stl. Inlet: bmt_9636 (UR10e + 500 mm lift, dress-kits/platform, jointA EE) vs inlet_mesh_2.
+enum class Scene { MtPart, Inlet };
+
 inline std::string read_text(const std::string &path) {
   std::ifstream f(path);
   std::ostringstream ss;
@@ -32,15 +36,23 @@ inline std::string read_text(const std::string &path) {
   return ss.str();
 }
 
-// The two mesh packages the flattened rbrobout URDF references.
-inline collision::MeshSources meshes(const std::string &fixtures) {
+// The mesh packages each cell's flattened URDF references. Inlet adds ewellix_driver (its 500 mm
+// lift meshes) and points dtc_test at the inlet mesh set.
+inline collision::MeshSources meshes(const std::string &fixtures, Scene scene = Scene::MtPart) {
   const std::string m = fixtures + "/robots/meshes/";
+  if (scene == Scene::Inlet)
+    return collision::MeshSources{{{"ur_description", m + "ur_description"},
+                                   {"dtc_test", m + "dtc_test_inlet"},
+                                   {"ewellix_driver", m + "ewellix_driver"}},
+                                  ""};
   return collision::MeshSources{
       {{"ur_description", m + "ur_description"}, {"dtc_test", m + "dtc_test"}}, ""};
 }
 
-inline std::shared_ptr<const RobotModel> load_robot(const std::string &fixtures) {
-  return RobotModel::from_urdf(read_text(fixtures + "/robots/rbrobout.urdf"));
+inline std::shared_ptr<const RobotModel> load_robot(const std::string &fixtures,
+                                                    Scene scene = Scene::MtPart) {
+  const char *urdf = scene == Scene::Inlet ? "rbrobout_inlet.urdf" : "rbrobout.urdf";
+  return RobotModel::from_urdf(read_text(fixtures + "/robots/" + urdf));
 }
 
 // Pose from a translation and a (w,x,y,z) quaternion — the layout used in the DTC source poses.
@@ -50,14 +62,21 @@ inline Transform pose_wxyz(double x, double y, double z, double qw, double qx, d
                                Eigen::Quaterniond(qw, qx, qy, qz).normalized());
 }
 
-// The work-object environment exactly as the DTC app places it: a single global pose applied to the
-// work-object mesh (at the object origin) plus three fiducial markers at their object-frame poses.
-inline collision::SceneDescription make_env(const std::string &fixtures) {
+// The work-object environment exactly as each app's config places it. MtPart applies a single global
+// pose to the work-object mesh plus three fiducial markers at their object-frame poses; Inlet is a
+// single work-object mesh (config/inlet/work_object.yaml).
+inline collision::SceneDescription make_env(const std::string &fixtures, Scene scene = Scene::MtPart) {
+  collision::SceneDescription env;
+  if (scene == Scene::Inlet) {
+    const std::string md = fixtures + "/robots/meshes/dtc_test_inlet/meshes/";
+    // work_object.yaml global_pose: pos + quat (x,y,z,w)=(0,0,0.8660254,-0.5).
+    const Transform g = pose_wxyz(-1.887, 0.0202435, 0.26, -0.5, 0.0, 0.0, 0.8660254);
+    env.objects.push_back({"work_object", load_mesh(md + "inlet_mesh_2.stl"), g});
+    return env;
+  }
   const std::string md = fixtures + "/robots/meshes/dtc_test/meshes/";
   // Global work-object pose in the world frame (setup_scene: pos + quat (x,y,z,w)=(0,0,-0.7071,0.7071)).
   const Transform g = pose_wxyz(1.5258, 0.55341, -0.12717, 0.7071, 0.0, 0.0, -0.7071);
-
-  collision::SceneDescription env;
   auto add = [&](const char *id, const char *file, const Transform &local) {
     env.objects.push_back({id, load_mesh(md + file), g * local});
   };
@@ -87,8 +106,10 @@ inline int load_srdf_acm(const std::string &srdf_xml, AllowedCollisionMatrix &ac
   return n;
 }
 
-inline void load_acm(const std::string &fixtures, AllowedCollisionMatrix &acm) {
-  load_srdf_acm(read_text(fixtures + "/robots/rbrobout.srdf"), acm);
+inline void load_acm(const std::string &fixtures, AllowedCollisionMatrix &acm,
+                     Scene scene = Scene::MtPart) {
+  const char *srdf = scene == Scene::Inlet ? "rbrobout_inlet.srdf" : "rbrobout.srdf";
+  load_srdf_acm(read_text(fixtures + "/robots/" + srdf), acm);
 }
 
 // Random configs uniformly inside the joint limits (continuous joints fall back to [-pi, pi]).

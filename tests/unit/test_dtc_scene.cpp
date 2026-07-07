@@ -125,3 +125,47 @@ TEST(DtcScene, FclOptixAgreeOnWorkObject) {
   EXPECT_GT(collide, 0) << "no collisions in sample — agreement is trivial";
   EXPECT_LT(collide, static_cast<int>(qs.size())) << "all collided — agreement is trivial";
 }
+
+// ---- Inlet cell (bmt_9636: UR10e + 500 mm lift + dress-kits + jointA EE vs inlet_mesh_2) ---------
+
+TEST(DtcScene, InletRobotLoadsAndResolvesCollisionMeshes) {
+  const auto model = dtc::load_robot(fixtures(), dtc::Scene::Inlet);
+  EXPECT_EQ(model->dof(), 7u); // 500 mm prismatic lift + UR10e revolute arm
+
+  const RobotInstance robot(model);
+  std::unique_ptr<CollisionScene> scene;
+  ASSERT_NO_THROW(scene = make_static_scene(model, SceneDescription{}, BackendHint::ForceCpuFcl,
+                                            dtc::meshes(fixtures(), dtc::Scene::Inlet)));
+  RobotInstance r2(model);
+  EXPECT_GT(dtc::load_srdf_acm(dtc::read_text(fixtures() + "/robots/rbrobout_inlet.srdf"), r2.acm()),
+            0);
+}
+
+TEST(DtcScene, InletFclOptixAgreeOnWorkObject) {
+  if (!optix_available())
+    GTEST_SKIP() << "OptiX backend not built";
+
+  const auto model = dtc::load_robot(fixtures(), dtc::Scene::Inlet);
+  const RobotInstance robot(model);
+  const SceneDescription env = dtc::make_env(fixtures(), dtc::Scene::Inlet);
+  const auto meshes = dtc::meshes(fixtures(), dtc::Scene::Inlet);
+
+  const auto fcl = make_static_scene(model, env, BackendHint::ForceCpuFcl, meshes);
+  const auto optix = make_static_scene(model, env, BackendHint::ForceOptix, meshes);
+  const auto fcl_ws = fcl->make_workspace();
+  const auto optix_ws = optix->make_workspace();
+
+  Rng rng(13);
+  const std::vector<JointPosition> qs = dtc::sample_configs(*model, rng, 500);
+  QueryOptions opts;
+  opts.check_self_collision = false;
+
+  const BatchResult f = fcl->query_batch(robot, qs, opts, *fcl_ws);
+  const BatchResult o = optix->query_batch(robot, qs, opts, *optix_ws);
+  int disagree = 0;
+  for (std::size_t i = 0; i < qs.size(); ++i)
+    disagree += (f.in_collision[i] != o.in_collision[i]) ? 1 : 0;
+  EXPECT_EQ(disagree, 0) << "inlet: FCL vs OptiX disagreed on " << disagree << "/" << qs.size();
+  std::printf("[DtcScene] inlet work-object collision fraction (500 poses): %.3f\n",
+              collision_fraction(f.in_collision));
+}

@@ -1,0 +1,162 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<robot xmlns:xacro="http://wiki.ros.org/xacro" name="bmt_9636">
+
+  <!-- robot name parameter -->
+  <xacro:arg name="name" default="ur" />
+  <!-- parameters -->
+  <xacro:arg name="prefix" default="" />
+
+  <xacro:arg name="ur_prefix" default="ur_" />
+
+  <!-- TODO: Make SRDF configurable (through xacro) -->
+
+  <!-- includes -->
+  <!--xacro:include
+  filename="$(find ur_moveit_config)/srdf/ur_macro.srdf.xacro"/-->
+  <!--xacro:ur_srdf
+  name="$(arg name)" prefix="$(arg prefix)"/-->
+  <virtual_joint name="world_joint" child_link="base_footprint" parent_frame="world" type="floating" />
+
+  <!-- movement groups -->
+  <group name="vertical_stage">
+    <chain base_link="base_link" tip_link="ur_base_link" />
+  </group>
+  <group name="manipulator">
+    <chain base_link="ur_base_link" tip_link="tool_changer_robot_link" />
+  </group>
+  <group name="complete_chain">
+    <chain base_link="base_link" tip_link="tool_changer_robot_link" />
+  </group>
+
+  <!-- preset positions -->
+  <!-- TODO: It seems xacro is not converting exactly the limits to radians? -->
+  <group_state name="retracted" group="manipulator">
+    <joint name="ur_shoulder_pan_joint" value="-1.0" /> <!-- -2.3562 -->
+    <joint name="ur_shoulder_lift_joint" value="-1.5" /> <!--  -2.88  -->
+    <joint name="ur_elbow_joint" value="0.0" />
+    <joint name="ur_wrist_1_joint" value="-1.0" />
+    <joint name="ur_wrist_2_joint" value="-0.0" />
+    <joint name="ur_wrist_3_joint" value="-1.5708" />
+  </group_state>
+
+  <group_state name="retracted" group="complete_chain">
+    <joint name="ewellix_lift_top_joint" value="0.0" />
+    <joint name="ur_shoulder_pan_joint" value="-0.4712" /> <!-- -2.3562 -->
+    <joint name="ur_shoulder_lift_joint" value="-0.6110" /> <!--  -2.88  -->
+    <joint name="ur_elbow_joint" value="-2.4435" />
+    <joint name="ur_wrist_1_joint" value="-1.45" />
+    <joint name="ur_wrist_2_joint" value="-0.0" />
+    <joint name="ur_wrist_3_joint" value="-2.8623" />
+  </group_state>
+
+  <group_state name="retracted" group="vertical_stage">
+    <joint name="ewellix_lift_top_joint" value="0.000" />
+  </group_state>
+
+  <group_state name="test" group="manipulator">
+    <joint name="ur_shoulder_pan_joint" value="-1.4" />
+    <joint name="ur_shoulder_lift_joint" value="0.02000" /> <!--  -2.88  -->
+    <joint name="ur_elbow_joint" value="0.06" />
+    <joint name="ur_wrist_1_joint" value="-0.15" />
+    <joint name="ur_wrist_2_joint" value="1.57" />
+    <joint name="ur_wrist_3_joint" value="1.42" />
+  </group_state>
+
+  <group_state name="test" group="vertical_stage">
+    <joint name="ewellix_lift_top_joint" value="0.150" />
+  </group_state>
+
+  <!--group_state
+  name="extended" group="manipulator">
+    <joint name="ur_shoulder_pan_joint" value="3.101996421813965" />
+    <joint name="ur_shoulder_lift_joint" value="-1.5163772741900843" />
+    <joint name="ur_elbow_joint" value="-1.4067533651935022" />
+    <joint name="ur_wrist_1_joint" value="-1.812125031148092" />
+    <joint name="ur_wrist_2_joint" value="1.595229148864746" />
+    <joint name="ur_wrist_3_joint" value="-0.07204276720155889" />
+  </group_state-->
+
+  <!-- collisions -->
+  <disable_collisions link1="base_link" link2="ewellix_lift_base_link" reason="Adjacent" />
+  <disable_collisions link1="base_link" link2="ewellix_lift_top_link" reason="Adjacent" />
+
+  <disable_collisions link1="base_link" link2="tool_changer_rack_left" reason="Adjacent" />
+  <disable_collisions link1="base_link" link2="tool_changer_rack_right" reason="Adjacent" />
+
+  <disable_collisions link1="ewellix_lift_base_link" link2="ewellix_lift_top_link" reason="Never" />
+  <disable_collisions link1="ewellix_lift_top_link" link2="ur_base" reason="Adjacent" />
+  <disable_collisions link1="ewellix_lift_top_link" link2="ur_base_link_inertia" reason="Adjacent" />
+
+  <disable_collisions link1="floor_plane" link2="ewellix_lift_base_link" reason="Adjacent" />
+  <disable_collisions link1="floor_plane" link2="ewellix_lift_top_link" reason="Adjacent" />
+
+  <disable_collisions link1="base_coupler" link2="base_link" reason="Adjacent" />
+
+  <disable_collisions link1="safety_plane" link2="base_link" reason="Adjacent" />
+
+  <!--disable_collisions
+  link1="ur_wrist_3_link" link2="measurement_tool" reason="Adjacent" /-->
+
+  <!-- DISABLE UR COLLISIONS -->
+  <disable_collisions link1="ur_base_link" link2="ur_base_link_inertia" reason="Adjacent" />
+  <disable_collisions link1="ur_base_link_inertia" link2="ur_shoulder_link" reason="Adjacent" />
+  <disable_collisions link1="ur_tool0" link2="ur_wrist_1_link" reason="Never" />
+  <disable_collisions link1="ur_tool0" link2="ur_wrist_2_link" reason="Never" />
+  <disable_collisions link1="ur_tool0" link2="ur_wrist_3_link" reason="Adjacent" />
+  <disable_collisions link1="ur_forearm_link" link2="ur_upper_arm_link" reason="Adjacent" />
+  <disable_collisions link1="ur_forearm_link" link2="ur_wrist_1_link" reason="Adjacent" />
+  <disable_collisions link1="ur_shoulder_link" link2="ur_upper_arm_link" reason="Adjacent" />
+  <disable_collisions link1="ur_wrist_1_link" link2="ur_wrist_2_link" reason="Adjacent" />
+  <disable_collisions link1="ur_wrist_1_link" link2="ur_wrist_3_link" reason="Never" />
+  <disable_collisions link1="ur_wrist_2_link" link2="ur_wrist_3_link" reason="Adjacent" />
+  <disable_collisions link1="ur_wrist_1_link" link2="tool_changer_robot_link" reason="Never" />
+  <disable_collisions link1="ur_wrist_2_link" link2="tool_changer_robot_link" reason="Never" />
+  <disable_collisions link1="ur_wrist_3_link" link2="wrist_extension_link" reason="Adjacent" />
+  <disable_collisions link1="wrist_extension_link" link2="tool_changer_robot_link" reason="Adjacent" />
+  <disable_collisions link1="ur_upper_arm_link" link2="dresskit_1" reason="Adjacent" />
+  <disable_collisions link1="ur_forearm_link" link2="dresskit_2" reason="Adjacent" />
+  <disable_collisions link1="ur_wrist_2_link" link2="dresskit_3" reason="Adjacent" />
+  <disable_collisions link1="ur_wrist_3_link" link2="dresskit_3" reason="Adjacent" />
+  <disable_collisions link1="wrist_extension_link" link2="dresskit_3" reason="Adjacent" />
+  <disable_collisions link1="dresskit_2" link2="dresskit_3" reason="Adjacent" />
+
+
+  <!-- AVOID 2.8CM CLAMPING ERROR OF UR -->
+  <disable_collisions link1="dresskit_3" link2="dresskit_5" reason="Adjacent" />
+  <disable_collisions link1="ur_wrist_2_link" link2="dresskit_5" reason="Adjacent" />
+  <disable_collisions link1="ur_wrist_3_link" link2="dresskit_5" reason="Adjacent" />
+  <disable_collisions link1="wrist_extension_link" link2="dresskit_5" reason="Adjacent" />
+  <disable_collisions link1="ur_wrist_1_link" link2="dresskit_5" reason="Never" />
+  <disable_collisions link1="ur_forearm_link" link2="dresskit_5" reason="Never" />
+  <disable_collisions link1="tool_changer_robot_link" link2="dresskit_5" reason="Never" />
+  <disable_collisions link1="base_link" link2="dresskit_5" reason="Never" />
+  <disable_collisions link1="tool_changer_rack_left" link2="dresskit_5" reason="Adjacent" />
+  <disable_collisions link1="tool_changer_rack_right" link2="dresskit_5" reason="Adjacent" />
+
+  <!-- AVOID DRESSKIT COLLISION WITH INLET -->
+  <disable_collisions link1="dresskit_5" link2="dresskit_4" reason="Never" />
+  <disable_collisions link1="ur_upper_arm_link" link2="dresskit_4" reason="Never" />
+  <disable_collisions link1="ur_wrist_1_link" link2="dresskit_4" reason="Never" />
+  <disable_collisions link1="ur_wrist_2_link" link2="dresskit_4" reason="Adjacent" />
+  <disable_collisions link1="ur_wrist_3_link" link2="dresskit_4" reason="Adjacent" />
+  <disable_collisions link1="wrist_extension_link" link2="dresskit_4" reason="Adjacent" />
+  <disable_collisions link1="ur_base_link" link2="dresskit_4" reason="Never" />
+  <disable_collisions link1="base_link" link2="dresskit_4" reason="Never" />
+  <disable_collisions link1="ur_base_link_inertia" link2="dresskit_4" reason="Never" />
+  <disable_collisions link1="ur_tool0" link2="dresskit_4" reason="Never" />
+  <disable_collisions link1="ur_forearm_link" link2="dresskit_4" reason="Never" />
+  <disable_collisions link1="ur_shoulder_link" link2="dresskit_4" reason="Never" />
+  <disable_collisions link1="dresskit_2" link2="dresskit_4" reason="Never" />
+  <disable_collisions link1="dresskit_1" link2="dresskit_4" reason="Never" />
+  <disable_collisions link1="dresskit_3" link2="dresskit_4" reason="Adjacent" />
+  <disable_collisions link1="safety_plane" link2="dresskit_4" reason="Never" />
+  <disable_collisions link1="safety_plane" link2="triflex_atrapment_1" reason="Never" />
+  <disable_collisions link1="base_link" link2="triflex_atrapment_1" reason="Never" />
+
+  <!-- FOR RUNNING DTC_TEST. REMOVE ASAP!! -->
+  <disable_collisions link1="dresskit_3" link2="ee_9636_jA" reason="Never" />
+  <disable_collisions link1="dresskit_5" link2="ee_9636_jA" reason="Never" />
+  <disable_collisions link1="ee_9636_jA" link2="ur_wrist_3_link" reason="Never" />
+  <disable_collisions link1="ee_9636_jA" link2="wrist_extension_link" reason="Never" />
+
+</robot>

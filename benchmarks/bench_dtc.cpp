@@ -7,6 +7,8 @@
 // The work object is a LOCALIZED obstacle far from the base (only the extended arm + EE reach it), so
 // this is the regime the opt-in robot-link broadphase cull targets. A/B it by running the binary
 // twice: once plain, once with QUEVEDOMP_OPTIX_CULL=1. Build under the bench-optix preset.
+//
+//   Usage: bench_dtc [mt_part|inlet]   (default mt_part)
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -24,18 +26,20 @@
 using namespace quevedomp;
 using namespace quevedomp::collision;
 
-int main() {
+int main(int argc, char **argv) {
   if (!optix_available()) {
     std::printf("OptiX backend not built — configure with the bench-optix preset.\n");
     return 1;
   }
   const std::string fx = QUEVEDOMP_FIXTURE_DIR;
+  const bool inlet = argc > 1 && std::string(argv[1]) == "inlet";
+  const dtc::Scene scene = inlet ? dtc::Scene::Inlet : dtc::Scene::MtPart;
 
-  const auto model = dtc::load_robot(fx);
+  const auto model = dtc::load_robot(fx, scene);
   RobotInstance robot(model);
-  dtc::load_acm(fx, robot.acm()); // SRDF allowed-collision matrix (for the full-query pass)
-  const auto meshes = dtc::meshes(fx);
-  const SceneDescription env = dtc::make_env(fx);
+  dtc::load_acm(fx, robot.acm(), scene); // SRDF allowed-collision matrix (for the full-query pass)
+  const auto meshes = dtc::meshes(fx, scene);
+  const SceneDescription env = dtc::make_env(fx, scene);
 
   const auto fcl = make_static_scene(model, env, BackendHint::ForceCpuFcl, meshes);
   const auto optix = make_static_scene(model, env, BackendHint::ForceOptix, meshes);
@@ -44,8 +48,9 @@ int main() {
   const std::vector<JointPosition> pool = dtc::sample_configs(*model, rng, 10000);
 
   const bool cull = std::getenv("QUEVEDOMP_OPTIX_CULL") != nullptr;
-  std::printf("DTC cell: rbrobout (UR10e + Ewellix lift + ee_hilok, dof=%zu) vs work object "
-              "(%zu env meshes)\n",
+  std::printf("DTC cell: %s (dof=%zu) vs work object (%zu env meshes)\n",
+              inlet ? "inlet / bmt_9636 (UR10e + 500mm lift + dress-kits + jointA EE)"
+                    : "mt_part / rbrobout (UR10e + 900mm lift + ee_hilok)",
               model->dof(), env.objects.size());
   std::printf("OptiX robot-link broadphase cull: %s\n",
               cull ? "ON (QUEVEDOMP_OPTIX_CULL set)" : "off (default)");
