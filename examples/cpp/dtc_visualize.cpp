@@ -74,12 +74,12 @@ int main(int argc, char **argv) {
   const std::string fx = QUEVEDOMP_FIXTURE_DIR;
   const std::string out_dir = argc > 1 ? argv[1] : ".";
   const bool inlet = argc > 2 && std::string(argv[2]) == "inlet";
-  const dtc::Scene scene = inlet ? dtc::Scene::Inlet : dtc::Scene::MtPart;
+  const dtc::Scene sel = inlet ? dtc::Scene::Inlet : dtc::Scene::MtPart;
 
-  const auto model = dtc::load_robot(fx, scene);
+  const auto model = dtc::load_robot(fx, sel);
   const RobotInstance robot(model);
-  const auto meshes = dtc::meshes(fx, scene);
-  const SceneDescription env = dtc::make_env(fx, scene);
+  const auto meshes = dtc::meshes(fx, sel);
+  const SceneDescription env = dtc::make_env(fx, sel);
 
   const bool gpu = optix_available();
   const auto scene = make_static_scene(model, env, gpu ? BackendHint::ForceOptix : BackendHint::ForceCpuFcl, meshes);
