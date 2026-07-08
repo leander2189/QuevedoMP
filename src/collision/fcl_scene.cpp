@@ -21,6 +21,7 @@
 #include "quevedomp/collision/collision_scene.hpp"
 
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -472,6 +473,92 @@ BatchResult FclScene::query_batch(const RobotInstance &robot, std::span<const Jo
 std::unique_ptr<CollisionScene> make_optix_scene(std::shared_ptr<const RobotModel> robot,
                                                  const SceneDescription &environment,
                                                  const MeshSources &meshes);
+
+namespace {
+
+// ---- BackendHint::Auto hybrid dispatch (Task 2b.3 item 1) ---------------------------------------
+// Small batches are launch/PCIe latency-bound on the GPU and FCL wins them outright; large batches
+// amortize the fixed cost and OptiX wins. Auto builds BOTH scenes over the same environment and
+// routes each query_batch by its shape: FCL for small batches, distance/margin queries (ADR-013 —
+// OptiX is boolean-only), and any post-build environment edit (the OptiX scene is static in v0);
+// OptiX for everything else. Both backends are differential-tested to agree, so routing never
+// changes an answer — only its latency.
+
+class HybridWorkspace final : public Workspace {
+public:
+  std::unique_ptr<Workspace> fcl_ws, optix_ws;
+};
+
+class HybridScene final : public CollisionScene {
+public:
+  HybridScene(std::unique_ptr<CollisionScene> fcl, std::unique_ptr<CollisionScene> optix)
+      : fcl_(std::move(fcl)), optix_(std::move(optix)) {}
+
+  // Environment edits go to FCL (the editable backend). The v0 OptiX scene cannot follow them, so
+  // the first edit permanently demotes routing to FCL-only — correct, just no longer accelerated.
+  SceneHandle add_object(std::string id, const Geometry &geom, const Transform &pose) override {
+    optix_stale_ = true;
+    return fcl_->add_object(std::move(id), geom, pose);
+  }
+  void remove_object(SceneHandle handle) override {
+    optix_stale_ = true;
+    fcl_->remove_object(handle);
+  }
+  void move_object(SceneHandle handle, const Transform &pose) override {
+    optix_stale_ = true;
+    fcl_->move_object(handle, pose);
+  }
+
+  [[nodiscard]] std::unique_ptr<Workspace> make_workspace() const override {
+    auto ws = std::make_unique<HybridWorkspace>();
+    ws->fcl_ws = fcl_->make_workspace();
+    ws->optix_ws = optix_->make_workspace();
+    return ws;
+  }
+
+  [[nodiscard]] BatchResult query_batch(const RobotInstance &robot,
+                                        std::span<const JointPosition> qs, const QueryOptions &opts,
+                                        Workspace &ws) const override {
+    auto &hws = dynamic_cast<HybridWorkspace &>(ws);
+    const bool use_fcl = optix_stale_ || opts.distance || opts.safety_margin > 0.0f ||
+                         qs.size() < batch_threshold();
+    return use_fcl ? fcl_->query_batch(robot, qs, opts, *hws.fcl_ws)
+                   : optix_->query_batch(robot, qs, opts, *hws.optix_ws);
+  }
+
+private:
+  // Batches below this go to FCL. Default from the DTC/bench_collision profiles (the GPU crossover
+  // sits at a few hundred configs); QUEVEDOMP_AUTO_BATCH_THRESHOLD overrides until the Task 2b.2
+  // latency profile fixes it per-fixture.
+  static std::size_t batch_threshold() {
+    static const std::size_t t = [] {
+      if (const char *s = std::getenv("QUEVEDOMP_AUTO_BATCH_THRESHOLD"))
+        return static_cast<std::size_t>(std::strtoul(s, nullptr, 10));
+      return std::size_t{256};
+    }();
+    return t;
+  }
+
+  std::unique_ptr<CollisionScene> fcl_, optix_;
+  bool optix_stale_ = false;
+};
+
+// Auto may route to OptiX only when the GPU path tests ALL robot-vs-environment geometry: OptiX
+// casts rays from MESH collision links only, so a robot with any primitive collision link would
+// false-free against the environment. (Primitive-only environments are fine — the OptiX scene
+// build throws on unsupported env geometry and Auto falls back to FCL.)
+bool robot_all_mesh_collisions(const RobotModel &model) {
+  bool any = false;
+  for (const Link &l : model.links())
+    for (const CollisionGeometry &cg : l.collisions) {
+      if (cg.type != GeometryType::Mesh)
+        return false;
+      any = true;
+    }
+  return any;
+}
+
+} // namespace
 #endif
 
 bool optix_available() noexcept {
@@ -494,9 +581,23 @@ std::unique_ptr<CollisionScene> make_static_scene(std::shared_ptr<const RobotMod
 #endif
   }
 
-  auto scene = std::make_unique<FclScene>(std::move(robot), meshes);
+  auto scene = std::make_unique<FclScene>(robot, meshes);
   for (const SceneObject &o : environment.objects)
     scene->add_object(o.id, o.geometry, o.pose);
+
+#ifdef QUEVEDOMP_WITH_OPTIX
+  // Auto = hybrid (Task 2b.3 item 1) when the robot is OptiX-eligible and the GPU scene builds.
+  // Any failure (unsupported env geometry, no usable GPU/driver at runtime) falls back to the
+  // FCL-only scene Auto has always returned — Auto never throws where FCL alone would work.
+  if (hint == BackendHint::Auto && robot_all_mesh_collisions(*robot)) {
+    try {
+      auto optix = make_optix_scene(robot, environment, meshes);
+      return std::make_unique<HybridScene>(std::move(scene), std::move(optix));
+    } catch (const std::exception &) {
+      // fall through to FCL-only
+    }
+  }
+#endif
   return scene;
 }
 

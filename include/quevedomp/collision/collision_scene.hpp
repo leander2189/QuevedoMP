@@ -66,6 +66,13 @@ struct MeshSources {
 // `meshes` resolves the robot's mesh collision links (Task 2a.2b). Throws if a robot mesh URI
 // cannot be resolved or loaded (it is never silently skipped). `BackendHint::ForceOptix` builds the
 // GPU backend when this build includes it (see optix_available()), else throws.
+//
+// `BackendHint::Auto` in an OptiX-enabled build returns a HYBRID scene when the robot's collision
+// geometry is all meshes and the GPU scene builds: each query_batch routes by shape — FCL for
+// small batches (below QUEVEDOMP_AUTO_BATCH_THRESHOLD, default 256; the GPU is latency-bound
+// there), distance/margin queries (ADR-013), and any environment edited after construction;
+// OptiX otherwise. Both backends agree config-for-config (differential-tested), so routing only
+// changes latency. In every other case Auto is the FCL backend, exactly as before.
 [[nodiscard]] std::unique_ptr<CollisionScene>
 make_static_scene(std::shared_ptr<const RobotModel> robot, const SceneDescription &environment,
                   BackendHint hint = BackendHint::Auto, const MeshSources &meshes = {});

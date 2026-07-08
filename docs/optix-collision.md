@@ -111,13 +111,16 @@ The transform block (and cull mask, if any) is copied H2D on the workspace's str
 per-config result array is zeroed, and **one** `optixLaunch` runs with a 2D grid indexed
 `(ray, config)`. Each thread ([`optix_programs.cu`](../src/collision/optix/optix_programs.cu)):
 
-1. reads its link-local ray and its config's transform for the ray's link,
-2. checks the cull flag (skip if the link was culled),
-3. applies the rigid transform on the fly — rotation to the direction, full affine to
+1. **early-aborts if its config already has a hit** — `out[c]` only ever goes 0→1, so a plain
+   read races benignly with the `atomicOr`; a stale 0 merely traces a ray another thread
+   already decided. Payoff grows with the scene's collision fraction,
+2. reads its link-local ray and its config's transform for the ray's link,
+3. checks the cull flag (skip if the link was culled),
+4. applies the rigid transform on the fly — rotation to the direction, full affine to
    the origin; rigid transforms preserve length, so `tmax` stays the stored ray length,
-4. traces the environment GAS with `OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT` — any hit at
+5. traces the environment GAS with `OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT` — any hit at
    all means collision, so no closest-hit search is needed,
-5. on hit, `atomicOr`s a 1 into its config's slot in the result array.
+6. on hit, `atomicOr`s a 1 into its config's slot in the result array.
 
 The boolean array is then copied D2H, also asynchronously. Nothing has synchronized yet.
 
@@ -181,5 +184,9 @@ cull on): ~23 ms per batch ≈ 2× the FCL backend, of which the dominant costs 
 parallel host FK/transform fill and the trace itself. With self-collision enabled the
 query is bound by the CPU FCL self pass — the entire GPU portion hides behind it. Small
 batches (1–10 configs) remain latency-bound at ~0.1–0.2 ms (launch + PCIe round-trip),
-where the CPU backend wins; the crossover is around a few hundred configs. Methodology
-and current numbers: [benchmarks/PROTOCOL.md](benchmarks/PROTOCOL.md).
+where the CPU backend wins; the crossover is around a few hundred configs.
+`BackendHint::Auto` exploits exactly that: on an eligible robot (all-mesh collision
+links) it builds a hybrid scene that routes small batches, distance/margin queries, and
+post-edit environments to FCL and everything else to OptiX
+(`QUEVEDOMP_AUTO_BATCH_THRESHOLD` overrides the default 256-config crossover).
+Methodology and current numbers: [benchmarks/PROTOCOL.md](benchmarks/PROTOCOL.md).

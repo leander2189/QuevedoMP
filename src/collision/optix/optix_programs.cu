@@ -18,6 +18,13 @@ extern "C" __global__ void __raygen__rg() {
   if (r >= params.num_rays || c >= params.num_configs)
     return;
 
+  // Early abort: once ANY ray of this config has hit, the config's answer is final — its remaining
+  // rays can skip the trace. The plain (non-atomic) read races benignly with the atomicOr below:
+  // out[c] only ever goes 0 -> 1, so a stale 0 merely traces a ray that another thread already
+  // decided. Biggest payoff in cluttered scenes (high collision fraction).
+  if (params.out[c])
+    return;
+
   // Broadphase cull: if this ray's link is far from the environment for this config, no ray of it
   // can hit — skip before touching the transform or tracing (see LaunchParams::link_cull).
   const int link = params.ray_link[r];

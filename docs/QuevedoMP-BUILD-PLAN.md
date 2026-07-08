@@ -676,13 +676,19 @@ Options (user decision — changes global WSL behavior):
 ### Task 2b.3 — Backend performance follow-ups (2026-07-06 perf review)
 Prioritized backlog from the post-pipelining review (numbers: DTC bench, `docs/optix-collision.md`
 "Where the time goes"). None block Phase 2b exit; pull them in when the profile says so.
-1. **Hybrid `BackendHint::Auto` dispatch by batch size** (afternoon-sized): route small batches
-   (< ~200 configs) to FCL, large to OptiX — `OptixScene` already owns an internal FCL scene.
-   Every batch size then gets whichever backend wins it; the 2b.2 latency profile fixes the
-   crossover constant.
-2. **Raygen per-config early abort** (afternoon-sized): first line of `__raygen__rg`,
-   `if (params.out[c]) return;` — once any ray of a config hits, its remaining rays skip the
-   trace. Biggest payoff in cluttered scenes (high collision fraction).
+1. ✅ **Hybrid `BackendHint::Auto` dispatch by batch size** — DONE (2026-07-08). `HybridScene`
+   (in `fcl_scene.cpp`) builds both backends when the robot is OptiX-eligible (ALL collision
+   links are meshes — a primitive link casts no rays and would false-free on env) and the GPU
+   scene builds (else Auto falls back to FCL-only, never throwing where FCL works). Routing:
+   FCL for batches < `QUEVEDOMP_AUTO_BATCH_THRESHOLD` (default 256; 2b.2 will calibrate),
+   distance/margin queries (ADR-013), and any post-build env edit (v0 OptiX is static — the
+   first edit demotes routing to FCL permanently); OptiX otherwise. Verify: 4 `HybridAuto.*`
+   tests (threshold-crossing agreement, primitive-robot fallback, post-edit demotion, distance
+   routing); GPU preset 131/131, dev-cpu green.
+2. ✅ **Raygen per-config early abort** — DONE (2026-07-08). `if (params.out[c]) return;` at the
+   top of `__raygen__rg` (benign race: out[c] is monotonic 0→1; a stale read just traces a ray
+   another thread already decided). DTC @10k configs: cull-on 23.1→19.0 ms (2.04×→2.27× vs
+   FCL), cull-off 66.5→62.9 ms — at only 4% collision fraction; payoff grows with clutter.
 3. **Parallel CPU self-collision** (day-sized): the full query is now bound by the FCL self pass
    (~16 µs/config). Partition the batch across OpenMP threads, one `FclWorkspace` per thread
    (same pattern as the FK loop). Compounding option: **convex hulls for self-pairs** (ADR-014
