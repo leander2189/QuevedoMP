@@ -707,32 +707,62 @@ Prioritized backlog from the post-pipelining review (numbers: DTC bench, `docs/o
 
 ---
 
-## Phase 3a — RRT pipeline + the goal gate (amendment M5: capture moved to 3b)
+## Phase 3a — Motion-planning pipeline + the goal gate (amendment M5: capture moved to 3b)
+
+### Planner performance contract (2026-07-08 — binding on EVERY `Planner` implementation)
+The planning stage is algorithm-agnostic: planners are selectable at execution time (and
+build-time selection falls out — an unbuilt planner is simply not registered). What is NOT
+negotiable is how any of them uses the collision backend and how its performance is observed.
+Every implementation, sampling- or optimization-based, satisfies:
+1. **Batch-first collision, always.** All collision goes through `check_edge`/`query_batch`;
+   per-config `query()` is forbidden in planner code. Target: median collision batch at or above
+   the hybrid Auto crossover (~256 configs; `QUEVEDOMP_AUTO_BATCH_THRESHOLD`) so the GPU path
+   engages. An algorithm that structurally emits thin batches (a vanilla extend loop) must
+   aggregate (k candidate extensions validated as one batch) or validate lazily — see Task 3.2.
+2. **Two time budgets, not one.** *First-feasible* and *polished* are separate: the planner's
+   job is fast-to-feasible; "smooth and logical" belongs to the polish loop (Task 3.3/3.3b/3.3c)
+   under its own budget. Concrete numbers are fixed when the Task 3.5 baseline lands (first run
+   records, second enforces — the coverage-gate pattern).
+3. **Determinism per seed.** Same `PlanningProblem` + seed ⇒ same trajectory (the ADR-006 Rng
+   contract). Required for benchmark comparability, regression bisection, and capture/replay.
+4. **One `Workspace` per thread, no hidden mutable state** — the collision API is lock-free
+   concurrent by design; planners must preserve that (parallel planners stay possible).
 
 ### Task 3.1 — Planning types
 - `TaskLimits`, `Goal`/`JointGoal`/`PoseGoal`/`MultiGoal`, `Constraints`, `PlanningProblem`, `PlanningResult` (with `used_seed` always populated).
+- **(2026-07-08) `PlanningStats`**, populated by every planner alongside `PlanningResult`:
+  collision-query count, **batch-size histogram**, time split (collision / planner logic /
+  smoothing / parameterization), nodes-or-iterations expanded, first-solution vs. final time.
+  Rationale: the performance contract is unenforceable without attribution — when a planner is
+  slow, the stats must show at a glance whether it starved the GPU with thin batches or burned
+  the budget in its own logic. Cheap to carry from day one, painful to retrofit.
 - **Verify:** construction + invalid-problem detection unit tests.
 
-### Task 3.2 — `RrtConnectPlanner` (CPU, FCL collision)
-- `Planner` interface + RRT-Connect using `CollisionScene` batch edge checks; `make_planner(...)`.
-- **Design for the GPU's appetite (M4):** all collision goes through `check_edge` batches —
-  never per-config `query`. Coarse-resolution edge pass first, refine survivors, so batches
-  stay as fat as correctness allows. Keep the validation call sites few and explicit: a lazy
-  edge-validation variant (accumulate candidate edges, validate as one batch) is a planned
-  Phase-3a-exit experiment, not a rewrite.
-- **(2026-07-06 perf review) The algorithm is a means, not the deliverable** — the goal is fast,
-  smooth, logical trajectories in complex environments; RRT-Connect is the baseline, not a
-  commitment. Concretely:
+### Task 3.2 — `Planner` interface + selectable planners; `RrtConnectPlanner` first
+- `Planner` interface bound by the **performance contract** above; a `make_planner(type, params)`
+  factory/registry selects the algorithm at **execution time** (a string/enum id — what the spec
+  §283 `PlannerConfig` already sketches). Planners registered at build time; selecting an
+  unregistered planner is a clear error, not a silent fallback. **No automatic algorithm
+  selection** — the caller chooses; the Task 3.5 benchmark measures whichever is selected, so
+  every registered planner is comparable on the same gate.
+- First implementation: RRT-Connect over `CollisionScene` batch edge checks — chosen to validate
+  the interface + contract and give the gate a reference number, not as a commitment.
+- **Design for the GPU's appetite (M4):** coarse-resolution edge pass first, refine survivors, so
+  batches stay as fat as correctness allows. Keep the validation call sites few and explicit:
   - **Batch across edges, not within one edge:** sample k candidate extensions and validate all
     their edges as one `query_batch` — one RRT edge (10–100 configs) sits below the GPU
-    crossover (~a few hundred); k edges together clear it. Batch-shaped planners (BIT*-style
-    batched informed search, lazy PRM variants) are in scope if they feed the backend better.
+    crossover (~a few hundred); k edges together clear it. Batch-shaped algorithms (BIT*-style
+    batched informed search, lazy PRM variants) slot in behind the same interface if they feed
+    the backend better; the quasi-static cells also make a per-cell roadmap (PRM built once,
+    queried many times) a natural candidate.
   - **Lazy edge evaluation:** build optimistically, collision-check only edges on a candidate
     path — order-of-magnitude fewer queries in clutter, and the surviving checks are fat batches.
   - **Bisection sample ordering in `check_edge`** (t = 0, 1, ½, ¼, ¾…) + chunked submission
     (endpoints, then doubling): colliding edges detected after far fewer samples; gives the CPU
     backend an early-out without hurting the GPU path.
-- **Verify:** finds a known 2D solution in < N nodes; cross-check vs OMPL RRT-Connect on the same problem.
+- **Verify:** finds a known 2D solution in < N nodes; cross-check vs OMPL RRT-Connect on the same
+  problem; `PlanningStats` shows the batch-size histogram meeting the contract target; selecting
+  an unregistered planner id fails loudly.
 
 ### Task 3.3 — `ShortcutSmoother`
 - Iterative shortcut.
@@ -753,6 +783,24 @@ Prioritized backlog from the post-pipelining review (numbers: DTC bench, `docs/o
   fixtures; smoother using it produces collision-free output with measurably higher min-clearance
   than Task 3.3's shortcut alone.
 
+### Task 3.3c — (NEW, 2026-07-08) Optimization-based planner/refiner — a library FEATURE
+- A gradient-based trajectory optimizer (CHOMP/TrajOpt-flavored) over the Task 3.3b clearance
+  field, exposed as a **first-class registered planner behind the same `Planner` interface** —
+  selectable at execution time like any other, NOT an automatic fallback. Two composition modes:
+  - **Refiner:** seeded with a feasible trajectory from a sampling planner (the pipeline's
+    polish stage — this is where "smooth and logical" is manufactured);
+  - **Standalone:** seeded with a straight-line (or IK-interpolated) guess — fast when it works,
+    honest failure when it doesn't (local minima); `PlanningStats` reports which mode ran.
+- Bound by the same performance contract: clearance/gradient lookups are batched over all
+  trajectory waypoints per iteration (the SDF makes this a fat, GPU-friendly query by
+  construction); deterministic per seed; polished-budget applies.
+- Depends on 3.3b; scope the cost terms (clearance, joint-limit, smoothness) + the final
+  feasibility re-check through `CollisionScene` (the optimizer trusts the SDF, the certificate
+  comes from the exact backend).
+- **Verify:** on the B.1 fixtures, refiner mode measurably improves smoothness + min-clearance
+  over Task 3.3 shortcut output at equal success rate; standalone mode solves the easy subset
+  within the polished budget; every output re-validated collision-free by the exact backend.
+
 ### Task 3.4 — `ToppRaParameterization`
 - Time-optimal under joint + TCP vel/acc.
 - Note: no apt package — this triggers the deferred vcpkg/FetchContent decision (deviation
@@ -767,6 +815,15 @@ Prioritized backlog from the post-pipelining review (numbers: DTC bench, `docs/o
   - ≤ 50 ms mean UR5 plan (moderate scene); ≥ 95% free-space / ≥ 80% obstacle success.
   - **p50 end-to-end plan time ≥ 5× faster than the MoveIt 2 baseline on the high-poly
     fixture set, at equal or better success rate** (per PROTOCOL.md).
+  - **(2026-07-08) Trajectory-quality metrics recorded per run** — the gate is not time+success
+    alone; "smooth, logical" must be measured: path-length ratio (joint-space length vs.
+    best-known for the fixture), a smoothness measure on the post-TOPP-RA trajectory (e.g.
+    summed squared joint jerk), and minimum clearance along the path. First full run RECORDS
+    the three; thresholds are then fixed and ENFORCED from the next run on (the coverage-gate
+    pattern). All three come from `PlanningStats` + the parameterized trajectory, so any
+    selected planner is measured identically.
+  - **Time-budget split fixed here:** the first-feasible and polished budgets (performance
+    contract item 2) get their concrete numbers from this baseline run.
   - **Scene-update budget (quasi-static story):** `move_object` + AS refit ≤ 100 ms on the
     largest fixture.
   - Update memory with the numbers, not just "done".
