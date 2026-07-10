@@ -801,9 +801,19 @@ Every implementation, sampling- or optimization-based, satisfies:
   problem; `PlanningStats` shows the batch-size histogram meeting the contract target; selecting
   an unregistered planner id fails loudly.
 
-### Task 3.3 — `ShortcutSmoother`
-- Iterative shortcut.
-- **Verify:** smoother output is **still collision-free** and no longer than input.
+### Task 3.3 — `ShortcutSmoother` ✅ (2026-07-10)
+- Iterative shortcut. **Implemented** `include/quevedomp/planning/smoother.hpp` (`Smoother`
+  interface + `SmootherParams` + `make_shortcut_smoother`) and `src/planning/shortcut_smoother.cpp`.
+  Each iteration picks path indices i<j (≥1 interior node) and validates the direct chord
+  path[i]→path[j] as ONE batch via `collision::check_edge`; if free, the interior nodes are erased
+  (a sub-polyline → its chord). Collision-safe (chord checked) and length-safe (chord ≤ polyline by
+  the triangle inequality ⇒ output never longer). Endpoints never removed; a single `Rng(seed)`
+  drives index choice ⇒ deterministic. Follow-ups noted in-source: batched multi-shortcut and
+  continuous/partial (interpolated-endpoint) shortcut — not needed for the Done-when.
+- **Verify:** ✅ `tests/unit/test_smoother.cpp` (5 cases): output re-validated collision-free via
+  `check_edge` (free zig-zag collapses strictly shorter; wall detour stays free — the cross-wall
+  chord is rejected), length never exceeds input, endpoints preserved, determinism per seed,
+  short-path/null-arg handling. dev-cpu 158/158 (ASan/UBSan), dev-gpu 159/159; clang-format clean.
 
 ### Task 3.3b — (NEW, 2026-07-06 perf review) GPU environment SDF for clearance-aware smoothing
 - Sampling planners give *feasible*; **smooth and logical** comes from an optimization pass that

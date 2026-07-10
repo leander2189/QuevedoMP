@@ -75,6 +75,7 @@ add_library(quevedomp
   src/planning/types.cpp
   src/planning/planner.cpp
   src/planning/rrt_connect.cpp
+  src/planning/shortcut_smoother.cpp
   src/capture/serialize.cpp
   src/viz/visualizer.cpp
 )
