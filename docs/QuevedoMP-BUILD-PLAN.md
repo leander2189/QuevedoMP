@@ -728,8 +728,21 @@ Every implementation, sampling- or optimization-based, satisfies:
 4. **One `Workspace` per thread, no hidden mutable state** — the collision API is lock-free
    concurrent by design; planners must preserve that (parallel planners stay possible).
 
-### Task 3.1 — Planning types
+### Task 3.1 — Planning types ✅ (2026-07-10)
 - `TaskLimits`, `Goal`/`JointGoal`/`PoseGoal`/`MultiGoal`, `Constraints`, `PlanningProblem`, `PlanningResult` (with `used_seed` always populated).
+- **Implemented** in `include/quevedomp/planning/types.hpp` + `src/planning/types.cpp` (namespace
+  `quevedomp::planning`). Design notes: goals are a polymorphic `Goal` base (clonable, `GoalType`
+  discriminator) carrying only the target *description* — `JointGoal` is self-contained
+  (`satisfies()` needs no model), `PoseGoal`/`MultiGoal` are model-coupled and interpreted by the
+  planner (Task 3.2). `Path = vector<JointPosition>` (untimed; TOPP-RA makes the timed
+  `Trajectory`). `PlanningProblem` carries `collision::QueryOptions` + timeout + optional seed;
+  `Constraints` v0 supports per-joint bound narrowing (Cartesian path constraints deferred).
+  `PlanningStats::record_batch()` is the single place collision accounting is bumped.
+  `validate(problem, model)` returns an optional reason string (nullopt ⇒ valid) — planners call it
+  first and map a failure to `PlanningStatus::InvalidProblem` without running the search.
+- **Verify:** ✅ `tests/unit/test_planning_types.cpp` (23 cases: construction, `JointGoal::satisfies`,
+  stats accounting, `to_string`, `Goal::clone`, and invalid-problem detection across every reject
+  path). dev-cpu 143/143 (ASan/UBSan), dev-gpu 144/144; clang-format clean.
 - **(2026-07-08) `PlanningStats`**, populated by every planner alongside `PlanningResult`:
   collision-query count, **batch-size histogram**, time split (collision / planner logic /
   smoothing / parameterization), nodes-or-iterations expanded, first-solution vs. final time.
