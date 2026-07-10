@@ -6,6 +6,14 @@ target_link_libraries(quevedomp_visualize PRIVATE quevedomp::quevedomp)
 add_executable(quevedomp_collision_visualize collision_visualize.cpp)
 target_link_libraries(quevedomp_collision_visualize PRIVATE quevedomp::quevedomp)
 
+# Full Phase 3a pipeline (IK -> RRT-Connect -> shortcut smooth) on the DTC inlet cell, animated in
+# rerun. Uses FCL (or OptiX if built); .rrd only in a WITH_RERUN build. Reuses the DTC scene builder.
+add_executable(inlet_plan_visualize inlet_plan_visualize.cpp)
+target_link_libraries(inlet_plan_visualize PRIVATE quevedomp::quevedomp)
+target_include_directories(inlet_plan_visualize PRIVATE ${CMAKE_SOURCE_DIR}/tests/support)
+target_compile_definitions(inlet_plan_visualize
+  PRIVATE QUEVEDOMP_FIXTURE_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures")
+
 # DTC-cell OptiX-result visualization (Phase D). Needs the OptiX backend to classify poses; produces
 # a .rrd only in a WITH_RERUN build (the viz-optix preset turns both on). Reuses the DTC scene builder.
 if(QUEVEDOMP_WITH_OPTIX)
