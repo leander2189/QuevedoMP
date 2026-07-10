@@ -751,7 +751,31 @@ Every implementation, sampling- or optimization-based, satisfies:
   the budget in its own logic. Cheap to carry from day one, painful to retrofit.
 - **Verify:** construction + invalid-problem detection unit tests.
 
-### Task 3.2 — `Planner` interface + selectable planners; `RrtConnectPlanner` first
+### Task 3.2 — `Planner` interface + selectable planners; `RrtConnectPlanner` first ✅ (2026-07-10)
+- **Implemented.** `include/quevedomp/planning/planner.hpp` (`Planner` interface + `PlannerParams` +
+  `make_planner` + `registered_planners`), `src/planning/planner.cpp` (string-id registry; unknown
+  id / null args throw `std::runtime_error` — no silent fallback), `src/planning/rrt_connect.cpp`
+  (the batched RRT-Connect, registered under `"rrt_connect"` via `src/planning/planners_internal.hpp`).
+  - **Deviation (recorded):** `make_planner` takes `shared_ptr<const RobotInstance>` (not spec §6's
+    `RobotModel`) — collision queries need the ACM the instance carries; the model is reached via
+    `robot->model_ptr()`. Mechanically required, so the plan wins.
+  - **Batched design (contract item 1):** growth validates `batch_size` (default 64) candidate
+    extensions concatenated into ONE `query_batch`; "connect" validates the full bridge edge
+    (new node → nearest node of the other tree) at `edge_resolution` — a collision-free bridge IS a
+    greedy connect. A single `Rng(used_seed)` drives all sampling single-threaded (contract item 3);
+    `plan()` keeps per-call scratch in locals, no member mutation (contract item 4). Coarse→refine
+    edge pass and bisection/chunked `check_edge` ordering are the noted follow-ups (not yet needed —
+    correctness + fat batches already met).
+  - `PlanningStats` populated (batch histogram, config/query counts, time split, iterations).
+- **Verify:** ✅ `tests/unit/test_planner.cpp` (10 cases): registry lists `rrt_connect`; unknown id /
+  null args throw; known 2D solution (a 2-DOF gantry point-robot around a wall+gap) found, its path
+  independently re-validated collision-free via `check_edge`; determinism per seed (identical path);
+  `InvalidProblem` + `used_seed` populated on rejection; colliding start/goal → `NoSolution`; the
+  batch histogram shows fat batches (max ≥ 256, majority of configs in ≥256 batches). dev-cpu
+  153/153 (ASan/UBSan), dev-gpu 154/154; clang-format clean.
+  - **OMPL cross-check DEFERRED:** OMPL is not an apt dependency (deviation D2) and adding it is a §12
+    decision — deferred like Task 2a.6's MoveIt baseline; correctness is checked self-containedly
+    (collision-free re-validation of the returned path) instead. Revisit if/when OMPL lands.
 - `Planner` interface bound by the **performance contract** above; a `make_planner(type, params)`
   factory/registry selects the algorithm at **execution time** (a string/enum id — what the spec
   §283 `PlannerConfig` already sketches). Planners registered at build time; selecting an

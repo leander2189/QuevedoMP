@@ -102,6 +102,10 @@ target_compile_definitions(test_planning_types
   PRIVATE QUEVEDOMP_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
 gtest_discover_tests(test_planning_types)
 
+add_executable(test_planner unit/test_planner.cpp)
+target_link_libraries(test_planner PRIVATE quevedomp::quevedomp GTest::gtest_main)
+gtest_discover_tests(test_planner)
+
 add_executable(test_collision_viz unit/test_collision_viz.cpp)
 target_link_libraries(test_collision_viz PRIVATE quevedomp::quevedomp GTest::gtest_main)
 gtest_discover_tests(test_collision_viz)

@@ -73,6 +73,8 @@ add_library(quevedomp
   src/collision/containment.cpp
   src/collision/edge_check.cpp
   src/planning/types.cpp
+  src/planning/planner.cpp
+  src/planning/rrt_connect.cpp
   src/capture/serialize.cpp
   src/viz/visualizer.cpp
 )
