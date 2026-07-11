@@ -14,6 +14,14 @@ target_include_directories(inlet_plan_visualize PRIVATE ${CMAKE_SOURCE_DIR}/test
 target_compile_definitions(inlet_plan_visualize
   PRIVATE QUEVEDOMP_FIXTURE_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures")
 
+# Simple IK snapshot to SEE where the jointA EE collides with the inlet part (several IK branches
+# as frames; EE mesh tinted by a real EE-vs-inlet check).
+add_executable(inlet_ik_visualize inlet_ik_visualize.cpp)
+target_link_libraries(inlet_ik_visualize PRIVATE quevedomp::quevedomp)
+target_include_directories(inlet_ik_visualize PRIVATE ${CMAKE_SOURCE_DIR}/tests/support)
+target_compile_definitions(inlet_ik_visualize
+  PRIVATE QUEVEDOMP_FIXTURE_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures")
+
 # DTC-cell OptiX-result visualization (Phase D). Needs the OptiX backend to classify poses; produces
 # a .rrd only in a WITH_RERUN build (the viz-optix preset turns both on). Reuses the DTC scene builder.
 if(QUEVEDOMP_WITH_OPTIX)
