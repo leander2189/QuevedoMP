@@ -27,12 +27,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # CPU dependency set via system apt (build-plan deviation D2: apt instead of vcpkg).
 # These cover the whole v0 CPU pipeline so later phases don't need image changes.
+# python3-dev/numpy/pytest serve the Phase 4a nanobind bindings (Task 4a.1, ADR-016);
+# nanobind itself comes via FetchContent at configure time, not apt.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential cmake ninja-build git pkg-config gdb \
         clang clang-format clang-tidy clangd \
         libeigen3-dev libspdlog-dev libfmt-dev libyaml-cpp-dev \
         libgtest-dev libgmock-dev libfcl-dev liburdfdom-dev \
         libassimp-dev zlib1g-dev gcovr \
+        python3-dev python3-pip python3-venv python3-numpy python3-pytest \
     && rm -rf /var/lib/apt/lists/*
 
 # Optional OptiX SDK install (login-gated installer, never committed — gitignored).

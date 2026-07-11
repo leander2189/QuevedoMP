@@ -60,6 +60,20 @@
       }
     },
     {
+      "name": "dev-py",
+      "displayName": "Debug, Python bindings ON (Phase 4a, ADR-016)",
+      "description": "CPU build + nanobind module (FetchContent, pinned v2.4.0). Sanitizers OFF: an ASan-instrumented extension cannot load into an uninstrumented python interpreter.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/dev-py",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "QUEVEDOMP_WITH_CUDA": "OFF",
+        "QUEVEDOMP_WITH_OPTIX": "OFF",
+        "QUEVEDOMP_WITH_PYTHON": "ON",
+        "QUEVEDOMP_ENABLE_SANITIZERS": "OFF"
+      }
+    },
+    {
       "name": "coverage",
       "displayName": "Debug, gcov coverage (Task 1.9 gate)",
       "description": "g++ --coverage, no sanitizers; build + ctest, then gcovr to gate line coverage in core/robot/kinematics.",
@@ -138,6 +152,7 @@
     { "name": "dev-optix", "configurePreset": "dev-optix" },
     { "name": "dev-viz",   "configurePreset": "dev-viz",
       "environment": { "CMAKE_POLICY_VERSION_MINIMUM": "3.5" } },
+    { "name": "dev-py",    "configurePreset": "dev-py" },
     { "name": "coverage",  "configurePreset": "coverage" },
     { "name": "fuzz",      "configurePreset": "fuzz" },
     { "name": "release",   "configurePreset": "release" },
@@ -164,6 +179,11 @@
     {
       "name": "dev-viz",
       "configurePreset": "dev-viz",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "dev-py",
+      "configurePreset": "dev-py",
       "output": { "outputOnFailure": true }
     }
   ]

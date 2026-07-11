@@ -192,3 +192,8 @@ endif()
 if(QUEVEDOMP_BUILD_FUZZERS)
   add_subdirectory(tests/fuzz)
 endif()
+
+# ---- Python bindings (Phase 4a, ADR-016) ---------------------------------------------------
+if(QUEVEDOMP_WITH_PYTHON)
+  add_subdirectory(bindings/python)
+endif()
