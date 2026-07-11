@@ -11,6 +11,7 @@ namespace nb = nanobind;
 void bind_types(nb::module_ &m);     // Task 4a.2
 void bind_robot(nb::module_ &m);     // Task 4a.3
 void bind_collision(nb::module_ &m); // Task 4a.4
+void bind_planning(nb::module_ &m);  // Task 4a.5
 
 NB_MODULE(_native, m) {
   m.doc() = "QuevedoMP — GPU-accelerated robot-arm motion planning (nanobind bindings)";
@@ -19,4 +20,5 @@ NB_MODULE(_native, m) {
   bind_types(m);
   bind_robot(m);
   bind_collision(m);
+  bind_planning(m);
 }
