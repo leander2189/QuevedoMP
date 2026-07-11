@@ -4,6 +4,5 @@ Thin re-export of the nanobind extension ``quevedomp._native``. Pythonic helpers
 here, but no logic: the C++ library is the single source of behavior (spec section 6 Phase 4).
 """
 
-from ._native import __version__
-
-__all__ = ["__version__"]
+from ._native import *  # noqa: F401,F403 — the C++ module defines the public surface
+from ._native import __version__  # noqa: F401  (explicit: underscore names skip the wildcard)

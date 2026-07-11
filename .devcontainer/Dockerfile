@@ -36,6 +36,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgtest-dev libgmock-dev libfcl-dev liburdfdom-dev \
         libassimp-dev zlib1g-dev gcovr \
         python3-dev python3-pip python3-venv python3-numpy python3-pytest \
+        python3-typing-extensions \
     && rm -rf /var/lib/apt/lists/*
 
 # Optional OptiX SDK install (login-gated installer, never committed — gitignored).

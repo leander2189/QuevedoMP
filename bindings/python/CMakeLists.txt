@@ -21,6 +21,7 @@ FetchContent_MakeAvailable(nanobind)
 nanobind_add_module(quevedomp_native
   NB_STATIC
   src/module.cpp
+  src/bind_types.cpp
 )
 target_link_libraries(quevedomp_native PRIVATE quevedomp::quevedomp)
 set_target_properties(quevedomp_native PROPERTIES
@@ -32,10 +33,19 @@ foreach(f IN ITEMS quevedomp/__init__.py quevedomp/py.typed)
   configure_file(${CMAKE_CURRENT_SOURCE_DIR}/${f} ${CMAKE_CURRENT_BINARY_DIR}/${f} COPYONLY)
 endforeach()
 
-# Task 4a.1 verify gate: the module imports. pytest suites arrive with Tasks 4a.2+.
+# Type stubs (`_native.pyi`, spec §6 Phase 4 DoD), regenerated from the built module.
+nanobind_add_stub(quevedomp_native_stub
+  MODULE _native
+  OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/quevedomp/_native.pyi
+  PYTHON_PATH ${CMAKE_CURRENT_BINARY_DIR}/quevedomp
+  DEPENDS quevedomp_native)
+
+# Verify gates: the module imports (Task 4a.1) and the pytest suite passes (Tasks 4a.2+).
 if(QUEVEDOMP_BUILD_TESTS)
   add_test(NAME python_import
     COMMAND Python::Interpreter -c "import quevedomp; print(quevedomp.__version__)")
-  set_tests_properties(python_import PROPERTIES
+  add_test(NAME python_pytest
+    COMMAND Python::Interpreter -m pytest ${CMAKE_CURRENT_SOURCE_DIR}/tests -q)
+  set_tests_properties(python_import python_pytest PROPERTIES
     ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_BINARY_DIR}")
 endif()
