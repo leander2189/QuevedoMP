@@ -43,6 +43,7 @@ override the original task text where they conflict:
 | M3 | **Mesh-loading task added (Task 1.4b, assimp)** + `libassimp-dev` in the container. | `urdfdom` yields mesh *filenames* only; nothing in the original dependency set loads STL/DAE/OBJ. Fatal for a high-poly-mesh project. |
 | M4 | **OptiX backend re-specced for batching (Task 2b.1)**: static environment GAS, robot surface rays transformed in raygen, per-config transforms in one device buffer, config index in launch dims — **no per-config IAS update**. Self-collision on CPU. Containment + margin policy decided as ADRs (012/013) before coding. | The spec's per-config "write IAS transforms → refit → launch" loop puts an AS update + launch + PCIe round-trip inside RRT's serial edge loop — the classic GPU-planner failure mode. Quasi-static scenes make the static-GAS design ideal. |
 | M5 | **Phase 3 split**: 3a = planner + smoother + TOPP-RA + **MoveIt benchmark** (the goal gate); 3b = capture/replay/MCAP. Python bindings stay Phase 4 and are droppable from the performance milestone. | Capture/replay is good engineering but sat *between* us and the goal metric. |
+| M6 | *(added 2026-07-11, ADR-016)* **Phase 4 split**: 4a = minimal nanobind slice over the Phase 3a API + `quevedomp-studio` (pure-Python interactive IDE: viser gizmos/widgets + rerun logging); 4b = the rest of the original Phase 4 (capture/TOPP-RA bindings, full pytest parity, notebook). 4a may start at the Phase 3a exit and does not gate — nor is gated by — Phase 3b. Binding rules: verb-level calls only (no Python inside C++ loops), GIL released on blocking calls, core untouched (`QUEVEDOMP_WITH_PYTHON=OFF` builds bit-identical). | An interactive IDE is wanted *for* Phase 3 debugging, not after it; the slice makes the IDE the bindings' test harness and surfaces binding-hostile API shapes while the C++ API is still cheap to change. Verb-level + GIL rules keep the performance contract intact. |
 
 ---
 
@@ -884,18 +885,80 @@ Every implementation, sampling- or optimization-based, satisfies:
 
 ---
 
-## Phase 4 — Python bindings (nanobind)
+## Phase 4a — Minimal Python slice + `quevedomp-studio` (amendment M6, ADR-016)
 
-### Task 4.1 — Build wiring
-- `WITH_PYTHON=ON` finds nanobind (introduce vcpkg here **only if** nanobind isn't apt-available — else pip/FetchContent); `module.cpp` skeleton imports.
-- **Verify:** `import quevedomp` succeeds in the container.
+> May start at the **Phase 3a exit** (independent of Phase 3b). Scope: bind the API that exists
+> at that point — nothing speculative. Binding rules (binding on every task below): **verb-level
+> calls only** (no Python callback from inside a C++ loop); **GIL released** on `plan`, `smooth`,
+> `solve`, `query_batch`, `check_edge`, `make_static_scene`, `load_mesh`, `from_urdf`; one
+> `Workspace` per Python thread (ADR-005); the core is never modified for Python's benefit.
+> Zero-copy applies to large arrays (mesh vertices/triangles, `BatchResult` vectors, result
+> paths); small per-call values (`q`, `Transform`) may copy at the boundary.
 
-### Task 4.2–4.5 — `bind_{types,robot,collision,planning}.cpp` incrementally
-- One binding TU per task; numpy zero-copy for `JointPosition`; generate `_native.pyi` stubs.
-- **Verify (per task):** pytest mirroring the corresponding C++ tests; zero-copy assertion (mutate-through / no-copy address check) for types.
+Package layout:
 
-### Task 4.6 — End-to-end notebook
-- load robot → plan → smooth → parameterize → visualize in rerun.
+```
+bindings/python/
+├── CMakeLists.txt              # QUEVEDOMP_WITH_PYTHON=ON; nanobind via pip/FetchContent
+├── src/
+│   ├── module.cpp              # NB_MODULE(_native), calls the four registrars
+│   ├── bind_types.cpp
+│   ├── bind_robot.cpp
+│   ├── bind_collision.cpp
+│   └── bind_planning.cpp
+└── quevedomp/
+    ├── __init__.py             # re-exports _native; pythonic helpers only (no logic)
+    ├── _native.pyi             # generated stubs
+    └── py.typed
+tools/quevedomp-studio/         # Task 4a.6 — pure Python, OUTSIDE the C++ build
+```
+
+### Task 4a.1 — Build wiring
+- `QUEVEDOMP_WITH_PYTHON=ON` finds nanobind (pip/FetchContent — vcpkg **only if** unavailable, per D2's spirit); `module.cpp` skeleton imports. `OFF` (default) builds bit-identical to today.
+- **Verify:** `import quevedomp` succeeds in the container; `OFF` build compiles untouched.
+
+### Task 4a.2 — `bind_types.cpp` (core vocabulary)
+- `Transform`: `Identity`/`from_translation`/`from_rotation`/`from_parts`, `matrix()→(4,4)`, `translation()→(3,)`, `rotation()→(3,3)`, `inverse`, `__mul__` (compose + apply-to-point), `is_approx`; plus a `from_matrix((4,4))` convenience.
+- `Pose` (`tf`, `pos_tol`, `rot_tol`); `Mesh` (`vertices`/`triangles` as `(N,3)` arrays, zero-copy views); `JointState`, `Waypoint` (`Trajectory` = `list[Waypoint]`).
+- `JointPosition` is **not** a class — nanobind's Eigen caster maps it to/from 1-D float64 numpy.
+- **Verify:** pytest round-trips; zero-copy assertion (mutate-through / address check) on `Mesh`.
+
+### Task 4a.3 — `bind_robot.cpp` (robot + kinematics + mesh loading)
+- Enums `JointType`/`GeometryType`; read-only `JointLimits`, `Joint`, `CollisionGeometry`, `Link`, `KinematicChain`.
+- `RobotModel.from_urdf(urdf_xml, yaml_extension=None)`; `name`/`dof`/`root_link`/`links`/`joints`/`source_urdf`/`source_yaml`; `find_link`/`find_joint`/`chain_to`.
+- `AllowedCollisionMatrix` (`allow`/`disallow`/`is_allowed`/`pairs`/`size`); `RobotInstance(model)` (`.model`, `.acm`).
+- Kinematics (free functions): `fk(model, q, link)→Transform`, `fk_all(model, q)→list[Transform]`, `jacobian(model, q, link)→(6,dof)`.
+- IK: `IkOptions`, `IkResult`, `make_numerical_ik(model, options)`, `InverseKinematics.solve(link, target, seed=None)` [GIL released].
+- Mesh access for studio rendering: `load_mesh(path)→Mesh` [GIL released], `resolve_mesh_uri(uri, package_dirs, base_dir="")`.
+- **Verify:** pytest mirrors the FK/IK C++ tests (UR5 fixture: FK <1e-9, IK converges).
+
+### Task 4a.4 — `bind_collision.cpp` (scene + queries)
+- Shapes `BoxShape`/`SphereShape`/`CylinderShape` (+ `Mesh` via the `Geometry` variant caster); `SceneObject`, `SceneDescription`.
+- `QueryOptions`, `PaddingMap`, `CollisionPair`, `CollisionResult`, `BatchResult` (`in_collision→(N,) uint8`, `min_distance→(N,) float32`, no copy).
+- `Workspace` (opaque); `CollisionScene.add_object/remove_object/move_object/make_workspace/query/query_batch` — `query_batch` takes `(N,dof)` numpy [GIL released]; `check_edge(...)→EdgeResult` [GIL released].
+- `make_static_scene(model, env, hint=Auto, meshes=MeshSources())` [GIL released]; `BackendHint`, `MeshSources`, `optix_available()`.
+- **Verify:** pytest mirrors the FCL boolean/distance tests; a batch query from Python matches the C++ result config-for-config.
+
+### Task 4a.5 — `bind_planning.cpp` (planner + smoother)
+- Goals: `Goal`/`JointGoal`/`PoseGoal`/`MultiGoal`; `Constraints`, `TaskLimits`, `PlanningProblem`, `PlanningStatus`, `PlanningStats`, `PlanningResult` (`.path` also exposed as `(N,dof)` array); `validate(problem, model)`.
+- `PlannerParams`, `make_planner`, `registered_planners`, `Planner.plan(problem)` [GIL released].
+- `SmootherParams`, `make_shortcut_smoother`, `Smoother.smooth(path)` [GIL released].
+- **Verify:** pytest plans the Task 3.2 fixture scene from Python: same seed ⇒ same `used_seed`/path as C++; a plan launched on a worker thread leaves the main thread responsive (GIL check).
+
+### Task 4a.6 — `quevedomp-studio` v0 (the Motion Planning IDE)
+- `tools/quevedomp-studio/`: pure-Python package, deps `quevedomp` + `viser` + `rerun-sdk` + `numpy`. No CMake target.
+- v0 features: load URDF (+ mesh dirs) → viser scene tree; joint sliders + FK display; drag a gizmo → IK solve → show config (green/red by collision); add/move box/sphere/cylinder/mesh obstacles with gizmos; set start/goal (joint or dragged pose), **Plan** button → worker thread → draw path, scrub waypoints; every attempt logged to rerun with `PlanningStats`.
+- Scene/robot state saves/loads via the Task 2a.5 serializers, so Phase 3b captures open in studio later.
+- **Verify:** scripted smoke test drives the studio API headless (load UR5, add obstacle, plan, assert path drawn); manual session against the Task 3.2 fixture scene.
+- **Phase 4a EXIT:** studio session covers IK + collision + plan + smooth interactively; pytest green for 4a.2–4a.5; stubs present. Update memory.
+
+---
+
+## Phase 4b — Python parity + notebook (rest of original Phase 4)
+
+### Task 4.6 — Remaining bindings + end-to-end notebook
+- Bind what Phase 3 added after the slice: TOPP-RA / `Trajectory` helpers (Task 3.4), capture (`quevedomp.replay`, Phase 3b), `PlanningTrace`. Full pytest parity with critical C++ tests.
+- Notebook: load robot → plan → smooth → parameterize → visualize in rerun.
 - **Verify:** notebook runs top-to-bottom; full pytest suite green; stubs present.
 - **Phase 4 EXIT:** spec §6 Phase 4 DoD. Update memory.
 

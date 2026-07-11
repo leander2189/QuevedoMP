@@ -121,7 +121,9 @@ quevedomp/
 │   │       ├── cuda_bvh/       # [DEFERRED] interface only
 │   │       └── esdf/           # [DEFERRED]
 │   └── capture/                # serializers + writers (MCAP)
-├── tools/quevedomp-replay/     # standalone CLI replay tool
+├── tools/
+│   ├── quevedomp-replay/       # standalone CLI replay tool
+│   └── quevedomp-studio/       # pure-Python interactive IDE (viser + rerun, ADR-016)
 ├── bindings/
 │   ├── python/                 # nanobind
 │   └── ros2/                   # [DEFERRED] adapter (separate colcon package)
@@ -705,14 +707,27 @@ benchmark vs MoveIt2 RRTConnect.
 
 ### Phase 4 — Python bindings (Weeks 20–23)
 
+> **Amended 2026-07-11 (ADR-016, build-plan M6): split into 4a/4b.** **4a** — a minimal
+> binding slice over the Phase 3a API (types, robot, FK/IK/Jacobian, collision, planner +
+> smoother) plus **`quevedomp-studio`** (`tools/quevedomp-studio/`): a pure-Python interactive
+> "Motion Planning IDE" — viser for 3D editing (gizmos, joint sliders, obstacle placement,
+> plan/scrub), rerun (Python SDK) for logging/replay. 4a may start at the Phase 3a exit,
+> independent of Phase 3b. **4b** — the remainder below (capture/TOPP-RA bindings, full
+> parity, notebook). Performance guardrails: bindings are verb-level only (no Python inside
+> C++ loops), blocking calls release the GIL, and the core is never modified for Python —
+> `QUEVEDOMP_WITH_PYTHON=OFF` builds are unaffected.
+
 **Deliverables** (`bindings/python/`, nanobind): `module.cpp` + `bind_{types,robot,collision,
 planning}.cpp`; Python package wrapper with `_native.pyi` stubs. Python API mirrors C++ 1:1;
 numpy zero-copy for `JointPosition` etc.; DLPack interop reserved for the future GPU-tensor path.
+Plus (4a) `quevedomp-studio` as above.
 
 **Testing:** pytest replicating critical C++ tests; zero-copy numpy validation; an end-to-end
-notebook (load robot → plan → smooth → parameterize → visualize in rerun).
+notebook (load robot → plan → smooth → parameterize → visualize in rerun); a headless scripted
+studio smoke test.
 
-**DoD:** the notebook runs end to end; pytest green in `ci-fast`; type stubs present.
+**DoD:** the notebook runs end to end; pytest green in `ci-fast`; type stubs present; a studio
+session covers IK + collision + plan + smooth interactively.
 
 > `[DEFERRED]` ROS2 adapter (`bindings/ros2/`, separate colcon package, `MoveGroup`-compatible
 > action server, `/planning_scene` subscriber, TF2, RViz publishers). Optional stretch; no ROS
@@ -789,7 +804,8 @@ robot, planning constraints, performance tuning.
 | 2a. Collision + FCL | 3 | Interface + contract + FCL + `check_edge` + serializers (CPU pipeline) |
 | 2b. OptiX static | 3 | OptiX behind same interface; boundary-band differential testing |
 | 3. RRT pipeline | 6 | RRT-Connect + shortcut + TOPP-RA + capture + best-effort replay |
-| 4. Python bindings | 4 | nanobind API, numpy zero-copy, end-to-end notebook |
+| 4a. Python slice + studio | 2 | minimal nanobind slice over the 3a API; `quevedomp-studio` interactive IDE (ADR-016) |
+| 4b. Python parity | 2 | full nanobind API, numpy zero-copy, end-to-end notebook |
 
 **v0 total ≈ 23 weeks (~5.5 months)** to a demonstrable end-to-end system. Hardening and the
 `§7` Dynamic+Optimization epic follow.
