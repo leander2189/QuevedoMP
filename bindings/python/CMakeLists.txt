@@ -28,6 +28,7 @@ nanobind_add_module(quevedomp_native
   src/module.cpp
   src/bind_types.cpp
   src/bind_robot.cpp
+  src/bind_collision.cpp
 )
 target_link_libraries(quevedomp_native PRIVATE quevedomp::quevedomp)
 set_target_properties(quevedomp_native PROPERTIES
