@@ -15,6 +15,11 @@ FetchContent_Declare(nanobind
   GIT_SHALLOW    ON)
 FetchContent_MakeAvailable(nanobind)
 
+# The extension is a shared object, so every libquevedomp.a member it pulls in must be PIC.
+# Scoped to this subdirectory (only entered when QUEVEDOMP_WITH_PYTHON=ON) so OFF presets keep
+# the plain static-library codegen, bit-identical to before.
+set_target_properties(quevedomp PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 # The extension is laid out as an importable package in the build tree:
 #   <binaryDir>/bindings/python/quevedomp/{__init__.py, py.typed, _native.*.so}
 # so `PYTHONPATH=<binaryDir>/bindings/python python3 -c "import quevedomp"` just works.
@@ -22,6 +27,7 @@ nanobind_add_module(quevedomp_native
   NB_STATIC
   src/module.cpp
   src/bind_types.cpp
+  src/bind_robot.cpp
 )
 target_link_libraries(quevedomp_native PRIVATE quevedomp::quevedomp)
 set_target_properties(quevedomp_native PROPERTIES
