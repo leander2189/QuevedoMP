@@ -306,7 +306,9 @@ public:
     // Everything below is enqueued on the workspace's own stream from pinned staging and joined by
     // a single cudaStreamSynchronize — no per-op device sync, no per-call cudaMalloc/Free. The sync
     // is deferred past the CPU self-collision pass below, so the CPU work overlaps the GPU trace.
-    LaunchParams p{}; // function-scope: must outlive its async H2D copy (joined at the sync below)
+    // Function-scope: each chunk's params must outlive its async H2D copy (joined at the sync
+    // below). reserve() upfront — a reallocation would move params out from under an async copy.
+    std::vector<LaunchParams> chunk_params;
     if (do_gpu) {
       const std::size_t xform_floats = n * slots * 12;
       ows.d_xform.alloc(xform_floats * sizeof(float));
@@ -323,6 +325,7 @@ public:
       cuda_check(cudaMemsetAsync(ows.d_out.ptr, 0, n * sizeof(unsigned), ows.stream),
                  "cudaMemsetAsync out");
 
+      LaunchParams p{};
       p.handle = gas_;
       p.ray_origin = d_ray_origin_.as<float>();
       p.ray_dir = d_ray_dir_.as<float>();
@@ -330,19 +333,31 @@ public:
       p.ray_link = d_ray_link_.as<int>();
       p.num_rays = num_rays_;
       p.num_links = static_cast<unsigned>(slots);
-      p.xform = ows.d_xform.as<float>();
-      p.num_configs = static_cast<unsigned>(n);
-      p.out = ows.d_out.as<unsigned>();
-      p.link_cull = cull_enabled ? ows.d_cull.as<unsigned char>() : nullptr;
 
+      // OptiX caps one launch at 2^30 total threads (width × height × depth); one thread per
+      // (ray, config) means a fat batch (P3 sweep edges: 10k+ configs × ~400k robot rays) blows
+      // it. Chunk configs per launch: the kernel indexes xform/out/link_cull from the params base
+      // pointers, so offsetting them per chunk needs no device-side change. One stream keeps the
+      // chunks (params upload → launch) correctly ordered against each other.
+      const std::size_t max_configs =
+          std::max<std::size_t>(1, (std::size_t{1} << 30) / std::max(1u, num_rays_));
       ows.d_params.alloc(sizeof(LaunchParams));
-      cuda_check(
-          cudaMemcpyAsync(ows.d_params.ptr, &p, sizeof(p), cudaMemcpyHostToDevice, ows.stream),
-          "cudaMemcpyAsync params");
-      optix_check(optixLaunch(pipeline_, ows.stream,
-                              reinterpret_cast<CUdeviceptr>(ows.d_params.ptr), sizeof(LaunchParams),
-                              &sbt_, num_rays_, static_cast<unsigned>(n), 1),
-                  "optixLaunch");
+      chunk_params.reserve((n + max_configs - 1) / max_configs);
+      for (std::size_t c0 = 0; c0 < n; c0 += max_configs) {
+        const std::size_t cn = std::min(max_configs, n - c0);
+        p.xform = ows.d_xform.as<float>() + c0 * slots * 12;
+        p.num_configs = static_cast<unsigned>(cn);
+        p.out = ows.d_out.as<unsigned>() + c0;
+        p.link_cull = cull_enabled ? ows.d_cull.as<unsigned char>() + c0 * slots : nullptr;
+        chunk_params.push_back(p);
+        cuda_check(cudaMemcpyAsync(ows.d_params.ptr, &chunk_params.back(), sizeof(LaunchParams),
+                                   cudaMemcpyHostToDevice, ows.stream),
+                   "cudaMemcpyAsync params");
+        optix_check(
+            optixLaunch(pipeline_, ows.stream, reinterpret_cast<CUdeviceptr>(ows.d_params.ptr),
+                        sizeof(LaunchParams), &sbt_, num_rays_, static_cast<unsigned>(cn), 1),
+            "optixLaunch");
+      }
       ows.h_hits.reserve(n * sizeof(unsigned));
       cuda_check(cudaMemcpyAsync(ows.h_hits.ptr, ows.d_out.ptr, n * sizeof(unsigned),
                                  cudaMemcpyDeviceToHost, ows.stream),
