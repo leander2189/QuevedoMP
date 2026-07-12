@@ -2,6 +2,7 @@
 #pragma once
 
 #include "quevedomp/collision/collision_scene.hpp"
+#include "quevedomp/collision/edge_discretization.hpp"
 #include "quevedomp/collision/types.hpp"
 #include "quevedomp/core/types.hpp"
 #include "quevedomp/robot/robot_instance.hpp"
@@ -19,5 +20,12 @@ struct EdgeResult {
 [[nodiscard]] EdgeResult check_edge(const CollisionScene &scene, const RobotInstance &robot,
                                     const JointPosition &q0, const JointPosition &q1,
                                     float resolution, const QueryOptions &opts, Workspace &ws);
+
+// Same check under an EdgeDiscretization policy (Task 3.3d P3): Cartesian-bounded stepping when
+// the policy enables it, else the uniform per-joint resolution above.
+[[nodiscard]] EdgeResult check_edge(const CollisionScene &scene, const RobotInstance &robot,
+                                    const JointPosition &q0, const JointPosition &q1,
+                                    const EdgeDiscretization &disc, const QueryOptions &opts,
+                                    Workspace &ws);
 
 } // namespace quevedomp::collision

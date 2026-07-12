@@ -239,6 +239,7 @@ def test_session_v2_round_trips_the_whole_problem(tmp_path: Path, session: Studi
     session.set_start(np.zeros(6))
     session.set_goal_pose("wrist_3_link", q.fk(session.model, GOAL, "wrist_3_link"), pos_tol=5e-3)
     session.planner_params.edge_resolution = 0.017
+    session.planner_params.max_link_sweep = 0.005
     session.timeout = 7.5
     session.smooth = False
     file = tmp_path / "bench.qmps"
@@ -250,9 +251,11 @@ def test_session_v2_round_trips_the_whole_problem(tmp_path: Path, session: Studi
     assert back.goal.pos_tol == pytest.approx(5e-3)
     assert back.goal.pose.is_approx(session.goal.pose, 1e-9)
     assert back.planner_params.edge_resolution == pytest.approx(0.017)
+    assert back.planner_params.max_link_sweep == pytest.approx(0.005)
     assert back.timeout == pytest.approx(7.5)
     assert back.smooth is False
     session.goal = None  # don't leak problem state into other tests
+    session.planner_params.max_link_sweep = 0.0
     session.smooth = True
 
 

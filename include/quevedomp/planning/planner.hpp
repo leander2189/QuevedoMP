@@ -23,8 +23,21 @@ struct PlannerParams {
   std::string algorithm = "rrt_connect";
 
   // Edge discretization handed to the collision backend: max per-joint step (rad) between the
-  // samples of one edge. Smaller ⇒ finer (safer, more configs per edge).
+  // samples of one edge. Smaller ⇒ finer (safer, more configs per edge). Ignored when
+  // max_link_sweep > 0.
   double edge_resolution = 0.05;
+
+  // Cartesian-bounded edge stepping (Task 3.3d P3): when > 0 (metres), the edge step count is
+  // chosen so that no point of the robot's collision geometry moves more than this between
+  // consecutive samples (Σ w_i·|Δq_i| ≤ max_link_sweep), replacing the uniform per-joint
+  // edge_resolution — a workspace-stated guarantee ("≤ 5 mm sweep") with fewer wasted configs on
+  // low-lever joints. 0 = off (edge_resolution applies).
+  double max_link_sweep = 0.0;
+
+  // Per-dof lever weights for max_link_sweep (see collision::cartesian_lever_weights). Leave
+  // empty to have make_planner compute them from the model — robots whose mesh collision URIs
+  // need package dirs must precompute with cartesian_lever_weights(model, meshes) and set this.
+  JointPosition lever_weights;
 
   // RRT extension step (rad): how far a tree node reaches toward a sample in joint space.
   double max_extension = 0.5;

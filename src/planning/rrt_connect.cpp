@@ -23,6 +23,7 @@
 #include <utility>
 #include <vector>
 
+#include "quevedomp/collision/edge_discretization.hpp"
 #include "quevedomp/collision/types.hpp"
 #include "quevedomp/core/rng.hpp"
 #include "quevedomp/kinematics/ik.hpp"
@@ -106,13 +107,14 @@ struct EdgeReq {
 };
 
 // Validate a set of edges with ONE query_batch, returning per-edge first-contact t (1.0 = free).
-// Each edge is discretized exactly as collision::check_edge (n = ceil(max|Δq|/res), n+1 inclusive
+// Each edge is discretized exactly as collision::check_edge (n = disc.steps(Δq), n+1 inclusive
 // samples); all edges' samples are concatenated so the backend sees one fat batch. Bumps the
 // collision stats + timer. Empty input ⇒ no query issued.
 std::vector<float> batch_check(std::span<const EdgeReq> edges,
                                const collision::CollisionScene &scene, const RobotInstance &robot,
                                const collision::QueryOptions &opts, collision::Workspace &ws,
-                               double resolution, PlanningStats &stats, double &t_collision) {
+                               const collision::EdgeDiscretization &disc, PlanningStats &stats,
+                               double &t_collision) {
   std::vector<float> result(edges.size(), 1.0f);
   if (edges.empty()) {
     return result;
@@ -123,8 +125,7 @@ std::vector<float> batch_check(std::span<const EdgeReq> edges,
   slices.reserve(edges.size());
   for (const auto &e : edges) {
     const JointPosition delta = e.q1 - e.q0;
-    const double max_step = delta.size() > 0 ? delta.cwiseAbs().maxCoeff() : 0.0;
-    const int n = std::max(1, static_cast<int>(std::ceil(max_step / resolution)));
+    const int n = disc.steps(delta);
     slices.emplace_back(samples.size(), n);
     for (int k = 0; k <= n; ++k) {
       samples.push_back(e.q0 + (static_cast<double>(k) / n) * delta);
@@ -217,7 +218,11 @@ class RrtConnectPlanner final : public Planner {
 public:
   RrtConnectPlanner(PlannerParams params, std::shared_ptr<const RobotInstance> robot,
                     std::shared_ptr<const collision::CollisionScene> scene)
-      : params_(std::move(params)), robot_(std::move(robot)), scene_(std::move(scene)) {}
+      : params_(std::move(params)), robot_(std::move(robot)), scene_(std::move(scene)),
+        // Validated (and, if needed, computed) ONCE here, so plan() never re-derives weights and
+        // a bad sweep configuration fails at make_planner time, not mid-plan.
+        disc_(collision::make_edge_discretization(params_.edge_resolution, params_.max_link_sweep,
+                                                  params_.lever_weights, robot_->model())) {}
 
   PlanningResult plan(const PlanningProblem &problem) const override {
     const auto t_begin = Clock::now();
@@ -296,9 +301,8 @@ public:
       goal_tree.add(g, -1);
     }
 
-    const double res = params_.edge_resolution;
     auto check = [&](std::span<const EdgeReq> edges) {
-      return batch_check(edges, *scene_, *robot_, opts, *ws, res, result.stats, t_collision);
+      return batch_check(edges, *scene_, *robot_, opts, *ws, disc_, result.stats, t_collision);
     };
 
     // Quick win: direct start→goal edges.
@@ -392,6 +396,7 @@ private:
   PlannerParams params_;
   std::shared_ptr<const RobotInstance> robot_;
   std::shared_ptr<const collision::CollisionScene> scene_;
+  collision::EdgeDiscretization disc_;
 };
 
 } // namespace

@@ -246,6 +246,13 @@ class StudioSession:
     ) -> None:
         self.goal = GoalSpec("pose", link=link, pose=pose, pos_tol=pos_tol, rot_tol=rot_tol)
 
+    def lever_weights(self) -> np.ndarray:
+        """Per-dof Cartesian lever weights (m/rad) for max_link_sweep, resolved through this
+        session's mesh sources; cached — they depend only on the (immutable) model."""
+        if getattr(self, "_lever_weights", None) is None:
+            self._lever_weights = q.cartesian_lever_weights(self.model, self.mesh_sources)
+        return self._lever_weights
+
     @property
     def is_planning(self) -> bool:
         return self._plan_thread is not None and self._plan_thread.is_alive()
@@ -262,6 +269,11 @@ class StudioSession:
         problem.timeout = self.timeout
         problem.seed = seed
 
+        # Cartesian-bounded edge stepping (P3) needs the lever weights, and this robot's mesh
+        # URIs need our package dirs — so compute them here (once; they depend only on the model).
+        if self.planner_params.max_link_sweep > 0 and self.planner_params.lever_weights.size == 0:
+            self.planner_params.lever_weights = self.lever_weights()
+
         planner = q.make_planner(self.planner_params, self.robot, self.scene)
         result = planner.plan(problem)
 
@@ -270,6 +282,8 @@ class StudioSession:
         if result.ok() and self.smooth and len(path) > 2:
             sp = q.SmootherParams()
             sp.edge_resolution = self.planner_params.edge_resolution
+            sp.max_link_sweep = self.planner_params.max_link_sweep
+            sp.lever_weights = self.planner_params.lever_weights
             sp.collision = self.query_options
             sp.seed = result.used_seed
             path = list(q.make_shortcut_smoother(sp, self.robot, self.scene).smooth(path))
@@ -333,6 +347,7 @@ class StudioSession:
             "planner": {
                 "algorithm": p.algorithm,
                 "edge_resolution": p.edge_resolution,
+                "max_link_sweep": p.max_link_sweep,  # lever weights are derived, not saved
                 "max_extension": p.max_extension,
                 "goal_bias": p.goal_bias,
                 "batch_size": p.batch_size,
@@ -385,6 +400,7 @@ class StudioSession:
         p = session.planner_params
         p.algorithm = planner.get("algorithm", p.algorithm)
         p.edge_resolution = planner.get("edge_resolution", p.edge_resolution)
+        p.max_link_sweep = planner.get("max_link_sweep", p.max_link_sweep)
         p.max_extension = planner.get("max_extension", p.max_extension)
         p.goal_bias = planner.get("goal_bias", p.goal_bias)
         p.batch_size = planner.get("batch_size", p.batch_size)

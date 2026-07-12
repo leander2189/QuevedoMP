@@ -101,6 +101,7 @@ class StudioApp:
         self.session.timeout = float(self.timeout.value)
         self.session.smooth = bool(self.do_smooth.value)
         self.session.planner_params.edge_resolution = float(self.edge_res.value)
+        self.session.planner_params.max_link_sweep = float(self.link_sweep.value) * 1e-3
         try:
             self.session.save(self.session_path.value.strip())
             self.session_status.value = f"saved {self.session_path.value.strip()}"
@@ -298,6 +299,11 @@ class StudioApp:
                 "edge check step (rad|m)", initial_value=self.session.planner_params.edge_resolution,
                 min=0.001, max=0.2, step=0.001,
             )
+            self.link_sweep = self.server.gui.add_number(
+                "max link sweep (mm, 0 = off)",  # P3: workspace-bounded edge steps; overrides ↑
+                initial_value=self.session.planner_params.max_link_sweep * 1e3,
+                min=0.0, max=100.0, step=0.5,
+            )
             self.do_smooth = self.server.gui.add_checkbox("shortcut smoothing",
                                                           initial_value=bool(self.session.smooth))
             self.plan_button = self.server.gui.add_button("Plan")
@@ -352,6 +358,7 @@ class StudioApp:
         self.session.timeout = float(self.timeout.value)
         self.session.smooth = bool(self.do_smooth.value)
         self.session.planner_params.edge_resolution = float(self.edge_res.value)
+        self.session.planner_params.max_link_sweep = float(self.link_sweep.value) * 1e-3
         seed = int(self.seed.value) or None
         self.plan_status.value = "planning…"
         self.plan_button.disabled = True

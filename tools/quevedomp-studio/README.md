@@ -15,6 +15,8 @@ The `quevedomp` package comes from the `dev-py` build tree until Phase 4b ships 
 docker run --rm -p 8080:8080 -v "$PWD":/work -w /work quevedomp-cuda bash -lc '
   PYTHONPATH=build/release-py/bindings/python:tools/quevedomp-studio \
   python3 -m quevedomp_studio --fixture ur5 --rerun-save /work/studio-session.rrd'
+
+docker run --rm -p 8080:8080 -v /mnt/d/Inventos/quevedoMP:/work -w /work quevedomp-cuda bash -lc 'PYTHONPATH=build/release-py/bindings/python:tools/quevedomp-studio python3 -m quevedomp_studio --load sessions/benchmark.qmps --rerun-save /work/studio-session.rrd'
 # 3. Open http://localhost:8080
 ```
 
@@ -34,7 +36,9 @@ DTC cells, the SRDF-derived ACM) wired automatically; for any other robot pass `
 3. **Plan**: capture *Set start* / *Set goal* (joint-space, or check *goal = IK gizmo pose* for
    a `PoseGoal`), pick timeout/seed/smoothing, hit **Plan**. Planning runs on a worker thread —
    the bindings release the GIL, so the UI stays live. The result draws as the end-effector
-   trace; **scrub** animates the robot along the path.
+   trace; **scrub** animates the robot along the path. *max link sweep* (mm, Task 3.3d P3)
+   switches edge checking to a workspace-stated guarantee — no point of the robot moves more
+   than that between collision samples — overriding the per-joint *edge check step* when > 0.
 4. **Sessions**: the *Session* panel saves/loads the whole problem setup — robot + ACM and
    obstacles (Task 2a.5 serializer blobs, the same format Phase 3b capture bundles will carry)
    plus start/goal, timeout, edge step, and planner settings — so a benchmark problem is one

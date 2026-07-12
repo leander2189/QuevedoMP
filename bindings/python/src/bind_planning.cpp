@@ -131,6 +131,12 @@ void bind_planning(nb::module_ &m) {
       .def(nb::init<>())
       .def_rw("algorithm", &PlannerParams::algorithm)
       .def_rw("edge_resolution", &PlannerParams::edge_resolution)
+      .def_rw("max_link_sweep", &PlannerParams::max_link_sweep,
+              "P3: > 0 (metres) bounds how far any robot point moves between edge samples, "
+              "replacing edge_resolution; needs lever_weights (see cartesian_lever_weights).")
+      .def_rw("lever_weights", &PlannerParams::lever_weights,
+              "Per-dof lever weights for max_link_sweep; empty = computed by make_planner "
+              "(precompute for robots whose mesh URIs need package dirs).")
       .def_rw("max_extension", &PlannerParams::max_extension)
       .def_rw("goal_bias", &PlannerParams::goal_bias)
       .def_rw("batch_size", &PlannerParams::batch_size)
@@ -149,6 +155,9 @@ void bind_planning(nb::module_ &m) {
   nb::class_<SmootherParams>(m, "SmootherParams")
       .def(nb::init<>())
       .def_rw("edge_resolution", &SmootherParams::edge_resolution)
+      .def_rw("max_link_sweep", &SmootherParams::max_link_sweep,
+              "Match the planner's max_link_sweep so shortcuts validate at the same fidelity.")
+      .def_rw("lever_weights", &SmootherParams::lever_weights)
       .def_rw("max_iterations", &SmootherParams::max_iterations)
       .def_rw("seed", &SmootherParams::seed)
       .def_rw("collision", &SmootherParams::collision);

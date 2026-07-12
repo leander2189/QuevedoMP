@@ -20,8 +20,16 @@ namespace quevedomp::planning {
 
 struct SmootherParams {
   // Edge discretization for validating a shortcut (rad, max per-joint step) — match the planner's
-  // so a shortcut that passes here is free at the same fidelity the planner guaranteed.
+  // so a shortcut that passes here is free at the same fidelity the planner guaranteed. Ignored
+  // when max_link_sweep > 0.
   double edge_resolution = 0.05;
+
+  // Cartesian-bounded shortcut validation (Task 3.3d P3) — match the planner's max_link_sweep /
+  // lever_weights (see PlannerParams). 0 = off; empty weights are computed from the model by
+  // make_shortcut_smoother (precompute via collision::cartesian_lever_weights for robots whose
+  // mesh URIs need package dirs).
+  double max_link_sweep = 0.0;
+  JointPosition lever_weights;
 
   // Number of shortcut attempts. The real polish budget is time-based in the pipeline (Task 3.5);
   // this bounds work in isolation.

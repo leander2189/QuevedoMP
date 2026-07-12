@@ -34,6 +34,9 @@ def main() -> None:
     parser.add_argument("--backend", choices=("keep", "fcl", "optix", "auto"), default="keep",
                         help="rebuild the scene with this hint (keep = session default Auto)")
     parser.add_argument("--timeout", type=float, default=0.0, help="override; 0 = file value")
+    parser.add_argument("--sweep", type=float, default=-1.0,
+                        help="max link sweep in metres (P3 Cartesian-bounded edge steps); "
+                        "0 disables, -1 = file value")
     args = parser.parse_args()
 
     session = StudioSession.load(args.session)
@@ -45,16 +48,23 @@ def main() -> None:
         )
     if args.timeout > 0:
         session.timeout = args.timeout
+    if args.sweep >= 0:
+        session.planner_params.max_link_sweep = args.sweep
 
     p = session.planner_params
     print(
         f"session={args.session} · robot={session.model.name} (dof {session.dof}) ·"
         f" obstacles={len(session.obstacles)} · goal={session.goal.kind}"
     )
+    edge = (f"sweep={p.max_link_sweep * 1e3:g}mm" if p.max_link_sweep > 0
+            else f"edge={p.edge_resolution}")
     print(
         f"backend={args.backend} · optix_available={q.optix_available()} ·"
-        f" edge={p.edge_resolution} · timeout={session.timeout}s · smooth={session.smooth}"
+        f" {edge} · timeout={session.timeout}s · smooth={session.smooth}"
     )
+    if p.max_link_sweep > 0:
+        w = session.lever_weights()
+        print("lever weights (m/rad): " + ", ".join(f"{x:.3f}" for x in w))
 
     for seed in args.seeds:
         attempt = session.plan(seed)

@@ -22,6 +22,7 @@
 
 #include "quevedomp/collision/collision_scene.hpp"
 #include "quevedomp/collision/edge_check.hpp"
+#include "quevedomp/collision/edge_discretization.hpp"
 #include "quevedomp/collision/geometry.hpp"
 #include "quevedomp/collision/types.hpp"
 #include "quevedomp/robot/robot_instance.hpp"
@@ -171,8 +172,12 @@ void bind_collision(nb::module_ &m) {
           "robot"_a, "qs"_a, "options"_a, "workspace"_a, nb::call_guard<nb::gil_scoped_release>(),
           "Collision state of an (N, dof) batch of configurations — the primary query.");
 
-  m.def("check_edge", &check_edge, "scene"_a, "robot"_a, "q0"_a, "q1"_a, "resolution"_a,
-        "options"_a, "workspace"_a, nb::call_guard<nb::gil_scoped_release>(),
+  m.def("check_edge",
+        nb::overload_cast<const CollisionScene &, const RobotInstance &, const JointPosition &,
+                          const JointPosition &, float, const QueryOptions &, Workspace &>(
+            &check_edge),
+        "scene"_a, "robot"_a, "q0"_a, "q1"_a, "resolution"_a, "options"_a, "workspace"_a,
+        nb::call_guard<nb::gil_scoped_release>(),
         "Validate the straight joint-space edge q0 -> q1, sub-sampled at `resolution` (rad) "
         "and checked as ONE batch. The RRT primitive.");
 
@@ -200,6 +205,13 @@ void bind_collision(nb::module_ &m) {
         "hint"_a = BackendHint::Auto, "meshes"_a = MeshSources{},
         nb::call_guard<nb::gil_scoped_release>(),
         "Build a collision scene over a static environment (BVH build; GIL released).");
+
+  // (After the MeshSources binding above: nanobind casts default args at def time.)
+  m.def("cartesian_lever_weights", &cartesian_lever_weights, "model"_a, "meshes"_a = MeshSources{},
+        nb::call_guard<nb::gil_scoped_release>(),
+        "Per-dof lever weights (m/rad; 1 for prismatic): upper bound on how far any collision-"
+        "geometry point moves per unit joint motion — feed PlannerParams/SmootherParams."
+        "lever_weights for Cartesian-bounded edge stepping (max_link_sweep).");
 
   m.def("optix_available", &optix_available, "True if this build includes the OptiX GPU backend.");
 }

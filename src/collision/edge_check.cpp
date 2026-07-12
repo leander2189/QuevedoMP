@@ -19,14 +19,21 @@ namespace quevedomp::collision {
 EdgeResult check_edge(const CollisionScene &scene, const RobotInstance &robot,
                       const JointPosition &q0, const JointPosition &q1, float resolution,
                       const QueryOptions &opts, Workspace &ws) {
-  if (q0.size() != q1.size())
-    throw std::runtime_error("check_edge: q0 and q1 have different sizes");
   if (!(resolution > 0.0f))
     throw std::runtime_error("check_edge: resolution must be > 0");
+  EdgeDiscretization disc;
+  disc.joint_resolution = static_cast<double>(resolution);
+  return check_edge(scene, robot, q0, q1, disc, opts, ws);
+}
+
+EdgeResult check_edge(const CollisionScene &scene, const RobotInstance &robot,
+                      const JointPosition &q0, const JointPosition &q1,
+                      const EdgeDiscretization &disc, const QueryOptions &opts, Workspace &ws) {
+  if (q0.size() != q1.size())
+    throw std::runtime_error("check_edge: q0 and q1 have different sizes");
 
   const JointPosition delta = q1 - q0;
-  const double max_step = delta.size() > 0 ? delta.cwiseAbs().maxCoeff() : 0.0;
-  const int n = std::max(1, static_cast<int>(std::ceil(max_step / resolution)));
+  const int n = disc.steps(delta);
 
   // n+1 samples including both endpoints, uniformly in t = k/n along the segment.
   std::vector<JointPosition> samples;

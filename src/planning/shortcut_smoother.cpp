@@ -26,7 +26,9 @@ class ShortcutSmoother final : public Smoother {
 public:
   ShortcutSmoother(SmootherParams params, std::shared_ptr<const RobotInstance> robot,
                    std::shared_ptr<const collision::CollisionScene> scene)
-      : params_(std::move(params)), robot_(std::move(robot)), scene_(std::move(scene)) {}
+      : params_(std::move(params)), robot_(std::move(robot)), scene_(std::move(scene)),
+        disc_(collision::make_edge_discretization(params_.edge_resolution, params_.max_link_sweep,
+                                                  params_.lever_weights, robot_->model())) {}
 
   Path smooth(const Path &path) const override {
     // Nothing to shorten with fewer than one interior node.
@@ -37,7 +39,6 @@ public:
     Path p = path;
     Rng rng(params_.seed);
     const auto ws = scene_->make_workspace();
-    const float res = static_cast<float>(params_.edge_resolution);
 
     for (std::size_t iter = 0; iter < params_.max_iterations; ++iter) {
       const std::size_t n = p.size();
@@ -50,7 +51,7 @@ public:
           static_cast<std::size_t>(rng.uniform(static_cast<double>(i + 2), static_cast<double>(n)));
 
       const auto edge =
-          collision::check_edge(*scene_, *robot_, p[i], p[j], res, params_.collision, *ws);
+          collision::check_edge(*scene_, *robot_, p[i], p[j], disc_, params_.collision, *ws);
       if (edge.valid) {
         // Drop the interior nodes (i, j) become adjacent, joined by the validated chord.
         p.erase(p.begin() + static_cast<std::ptrdiff_t>(i + 1),
@@ -64,6 +65,7 @@ private:
   SmootherParams params_;
   std::shared_ptr<const RobotInstance> robot_;
   std::shared_ptr<const collision::CollisionScene> scene_;
+  collision::EdgeDiscretization disc_;
 };
 
 } // namespace

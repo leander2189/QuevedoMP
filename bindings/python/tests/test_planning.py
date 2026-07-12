@@ -179,6 +179,35 @@ def test_colliding_goal_is_no_solution() -> None:
     assert r.message
 
 
+# ---- Cartesian-bounded edge stepping (Task 3.3d P3) ---------------------------------------------
+
+
+def test_lever_weights_and_sweep_mode() -> None:
+    model, robot, scene = make_fixture(True)
+    w = q.cartesian_lever_weights(model)
+    assert w.shape == (2,)
+    assert np.allclose(w, [1.0, 1.0])  # prismatic joints: metres per metre, exactly
+
+    params = q.PlannerParams()
+    params.max_link_sweep = 0.01  # 1 cm sweep bound; weights auto-computed (primitive robot)
+    planner = q.make_planner(params, robot, scene)
+    r = planner.plan(problem_to([-1, -1], [1, -1], seed=2))
+    assert r.ok(), r.message
+
+    sp = q.SmootherParams()
+    sp.max_link_sweep = params.max_link_sweep
+    sp.lever_weights = w
+    sp.seed = 2
+    smoothed = q.make_shortcut_smoother(sp, robot, scene).smooth(r.path)
+    assert path_length(smoothed) <= path_length(r.path) + 1e-12
+
+    bad = q.PlannerParams()
+    bad.max_link_sweep = 0.01
+    bad.lever_weights = np.array([1.0])  # wrong size for a 2-dof robot: loud failure
+    with pytest.raises(RuntimeError):
+        q.make_planner(bad, robot, scene)
+
+
 # ---- GIL release (the IDE's responsiveness contract, ADR-016) -----------------------------------
 
 
