@@ -29,7 +29,7 @@ Mesh tessellate_sphere(double radius, int n_lat, int n_lon) {
                               radius * std::sin(t) * std::sin(p), radius * std::cos(t));
     }
   }
-  m.vertices.emplace_back(0.0, 0.0, -radius); // bottom pole
+  m.vertices.emplace_back(0.0, 0.0, -radius);                 // bottom pole
   const auto ring = [n_lon](int i) { return 1 + i * n_lon; }; // first index of ring i
   const int bottom = static_cast<int>(m.vertices.size()) - 1;
 
@@ -58,7 +58,7 @@ Mesh tessellate_cylinder(double radius, double length, int n) {
     const double a = 2.0 * M_PI * j / n;
     m.vertices.emplace_back(radius * std::cos(a), radius * std::sin(a), -half);
   }
-  m.vertices.emplace_back(0.0, 0.0, half);  // cap centers
+  m.vertices.emplace_back(0.0, 0.0, half); // cap centers
   m.vertices.emplace_back(0.0, 0.0, -half);
   const int c_top = 2 * n, c_bot = 2 * n + 1;
 

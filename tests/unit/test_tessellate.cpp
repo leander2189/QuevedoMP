@@ -30,8 +30,8 @@ void expect_closed_manifold(const Mesh &m, const char *label) {
     }
   }
   for (const auto &[edge, count] : edges)
-    EXPECT_EQ(count, 2) << label << ": edge " << edge.first << "-" << edge.second
-                        << " shared by " << count << " triangles";
+    EXPECT_EQ(count, 2) << label << ": edge " << edge.first << "-" << edge.second << " shared by "
+                        << count << " triangles";
   const auto v = static_cast<long>(m.vertices.size());
   const auto e = static_cast<long>(edges.size());
   const auto f = static_cast<long>(m.triangles.size());
@@ -86,8 +86,8 @@ TEST(Tessellate, TessellatedSphereMatchesExactAnswers) {
 
   for (const auto &[x, expected] : {std::pair{0.8, true}, std::pair{1.2, false}}) {
     SceneDescription env;
-    env.objects.push_back({"obj", tessellate_sphere(0.5),
-                           Transform::from_translation(Eigen::Vector3d(x, 0.0, 0.0))});
+    env.objects.push_back(
+        {"obj", tessellate_sphere(0.5), Transform::from_translation(Eigen::Vector3d(x, 0.0, 0.0))});
     const auto scene = make_static_scene(model, env, BackendHint::ForceCpuFcl);
     const auto ws = scene->make_workspace();
     EXPECT_EQ(scene->query(robot, JointPosition(), opts, *ws).in_collision, expected) << x;

@@ -8,9 +8,9 @@
 // into the config's result. Robot-vs-self runs on the CPU via an internal FCL scene (ADR-014
 // item 4) WHILE the GPU traces (the stream sync comes after it), OR'd into the same booleans.
 //
-// Containment (ADR-012): surface rays miss a link fully inside an obstacle, so a per-link parity-ray
-// check (shared EnvContainment, CPU) runs alongside — analytic inside-tests for primitive solids,
-// parity rays for watertight meshes.
+// Containment (ADR-012): surface rays miss a link fully inside an obstacle, so a per-link
+// parity-ray check (shared EnvContainment, CPU) runs alongside — analytic inside-tests for
+// primitive solids, parity rays for watertight meshes.
 //
 // v0 scope (minimal boolean, per the build-plan decision): boolean only (opts.distance unsupported
 // -> throws; exact distance stays with FCL per spec §4.5). Every geometry type is ingested:
@@ -275,7 +275,8 @@ public:
             // Pose the link-local ray AABB (its 8 corners) into the world and test it against the
             // environment AABB. No overlap => none of this link's rays can hit => cull.
             Eigen::Vector3f wlo = Eigen::Vector3f::Constant(std::numeric_limits<float>::infinity());
-            Eigen::Vector3f whi = Eigen::Vector3f::Constant(-std::numeric_limits<float>::infinity());
+            Eigen::Vector3f whi =
+                Eigen::Vector3f::Constant(-std::numeric_limits<float>::infinity());
             for (int k = 0; k < 8; ++k) {
               const Eigen::Vector3d corner((k & 1) ? slot_hi_[s].x() : slot_lo_[s].x(),
                                            (k & 2) ? slot_hi_[s].y() : slot_lo_[s].y(),
@@ -284,8 +285,8 @@ public:
               wlo = wlo.cwiseMin(w);
               whi = whi.cwiseMax(w);
             }
-            const bool overlap = (wlo.array() <= env_hi_.array()).all() &&
-                                 (env_lo_.array() <= whi.array()).all();
+            const bool overlap =
+                (wlo.array() <= env_hi_.array()).all() && (env_lo_.array() <= whi.array()).all();
             cull[c * slots + s] = overlap ? 0 : 1;
           }
           for (std::size_t k = 0; do_contain && k < n_int; ++k)
@@ -302,9 +303,9 @@ public:
     }
 
     // ---- GPU robot-vs-environment ----
-    // Everything below is enqueued on the workspace's own stream from pinned staging and joined by a
-    // single cudaStreamSynchronize — no per-op device sync, no per-call cudaMalloc/Free. The sync is
-    // deferred past the CPU self-collision pass below, so the CPU work overlaps the GPU trace.
+    // Everything below is enqueued on the workspace's own stream from pinned staging and joined by
+    // a single cudaStreamSynchronize — no per-op device sync, no per-call cudaMalloc/Free. The sync
+    // is deferred past the CPU self-collision pass below, so the CPU work overlaps the GPU trace.
     LaunchParams p{}; // function-scope: must outlive its async H2D copy (joined at the sync below)
     if (do_gpu) {
       const std::size_t xform_floats = n * slots * 12;
@@ -335,10 +336,12 @@ public:
       p.link_cull = cull_enabled ? ows.d_cull.as<unsigned char>() : nullptr;
 
       ows.d_params.alloc(sizeof(LaunchParams));
-      cuda_check(cudaMemcpyAsync(ows.d_params.ptr, &p, sizeof(p), cudaMemcpyHostToDevice, ows.stream),
-                 "cudaMemcpyAsync params");
-      optix_check(optixLaunch(pipeline_, ows.stream, reinterpret_cast<CUdeviceptr>(ows.d_params.ptr),
-                              sizeof(LaunchParams), &sbt_, num_rays_, static_cast<unsigned>(n), 1),
+      cuda_check(
+          cudaMemcpyAsync(ows.d_params.ptr, &p, sizeof(p), cudaMemcpyHostToDevice, ows.stream),
+          "cudaMemcpyAsync params");
+      optix_check(optixLaunch(pipeline_, ows.stream,
+                              reinterpret_cast<CUdeviceptr>(ows.d_params.ptr), sizeof(LaunchParams),
+                              &sbt_, num_rays_, static_cast<unsigned>(n), 1),
                   "optixLaunch");
       ows.h_hits.reserve(n * sizeof(unsigned));
       cuda_check(cudaMemcpyAsync(ows.h_hits.ptr, ows.d_out.ptr, n * sizeof(unsigned),
@@ -502,8 +505,9 @@ private:
     bi.triangleArray.numSbtRecords = 1;
 
     // The environment is static and traced by millions of rays, so build for FAST TRACE (not the
-    // default fast-build) and COMPACT the result: a higher-quality, smaller BVH — the single biggest
-    // lever on big-mesh traversal speed. Build time is irrelevant here (one-time, at scene setup).
+    // default fast-build) and COMPACT the result: a higher-quality, smaller BVH — the single
+    // biggest lever on big-mesh traversal speed. Build time is irrelevant here (one-time, at scene
+    // setup).
     OptixAccelBuildOptions ao{};
     ao.buildFlags = OPTIX_BUILD_FLAG_PREFER_FAST_TRACE | OPTIX_BUILD_FLAG_ALLOW_COMPACTION;
     ao.operation = OPTIX_BUILD_OPERATION_BUILD;

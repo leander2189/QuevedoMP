@@ -520,8 +520,8 @@ public:
                                         std::span<const JointPosition> qs, const QueryOptions &opts,
                                         Workspace &ws) const override {
     auto &hws = dynamic_cast<HybridWorkspace &>(ws);
-    const bool use_fcl = optix_stale_ || opts.distance || opts.safety_margin > 0.0f ||
-                         qs.size() < batch_threshold();
+    const bool use_fcl =
+        optix_stale_ || opts.distance || opts.safety_margin > 0.0f || qs.size() < batch_threshold();
     return use_fcl ? fcl_->query_batch(robot, qs, opts, *hws.fcl_ws)
                    : optix_->query_batch(robot, qs, opts, *hws.optix_ws);
   }
