@@ -928,15 +928,9 @@
     <child link="dresskit_2"/>
   </joint>
   <link name="dresskit_2">
-    <visual>
-      <origin rpy="0 0 0" xyz="0 0 0"/>
-      <geometry>
-        <!--mesh filename="package://dtc_test/meshes/dresskit_2.stl"/-->
-      </geometry>
-      <material name="black">
-        <color rgba="0.05 0.05 0.05 1"/>
-      </material>
-    </visual>
+    <!-- No visual: the referenced dresskit_2.stl is not in the fixture mesh set, and an empty
+         <geometry> makes urdfdom emit "Geometry tag contains no child element" on every load.
+         Collision (cylinder + spheres below) is what the planner uses anyway. -->
     <collision>
       <origin rpy="0 0 0" xyz="-0.115 0.0 0.2861"/>
       <geometry>
@@ -1076,6 +1070,17 @@
       </geometry>
     </collision>
   </link>
+  <!-- TCP of the attached jointA EE — the frame IK and planning target (the DTC app expresses
+       its fastener poses for this frame). Origin is the app's mesh_pose * tcp_pose composition
+       (config/inlet; see examples/cpp/inlet_ik_visualize.cpp): the two 180-deg-about-Y rotations
+       cancel to identity within 6e-7 rad, leaving only the translation. Massless frame link:
+       no collision geometry, so scene/SRDF behavior is unchanged. -->
+  <link name="ee_9636_jA_tcp"/>
+  <joint name="ee_9636_jA_tcp_joint" type="fixed">
+    <parent link="tool_changer_robot_link"/>
+    <child link="ee_9636_jA_tcp"/>
+    <origin rpy="0 0 0" xyz="-0.0154998 0.285 0.2116998"/>
+  </joint>
   <!-- Gazebo plugins -->
   <gazebo>
     <plugin filename="libgazebo_set_joint_positions_plugin.so" name="set_joints_position_plugin">
