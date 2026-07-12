@@ -13,12 +13,14 @@ The `quevedomp` package comes from the `dev-py` build tree until Phase 4b ships 
 # 2. From the repo root, in the container (publish the UI port):
 docker run --rm -p 8080:8080 -v "$PWD":/work -w /work quevedomp-cuda bash -lc '
   PYTHONPATH=build/dev-py/bindings/python:tools/quevedomp-studio \
-  python3 -m quevedomp_studio \
-    --urdf tests/fixtures/robots/ur5.urdf \
-    --package-dir example-robot-data=tests/fixtures/robots/meshes/example-robot-data \
-    --rerun-save /work/studio-session.rrd'
+  python3 -m quevedomp_studio --fixture ur5 --rerun-save /work/studio-session.rrd'
 # 3. Open http://localhost:8080
 ```
+
+The robot is chosen at launch — one robot per session in v0. `--fixture {ur5,ur10,panda,iiwa,
+irb2400}` loads a repo fixture with its mesh directories wired automatically; for any other
+robot pass `--urdf` plus `--package-dir PKG=DIR` (repeatable) / `--base-dir`, exactly like the
+C++ `MeshSources`.
 
 ## Workflow
 

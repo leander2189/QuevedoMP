@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import json
 import threading
+import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional, Union
@@ -206,16 +207,27 @@ class StudioSession:
         attempt = Attempt(len(self.attempts), self.start.copy(), self.goal, result, path, smoothed)
         self.attempts.append(attempt)
         for listener in self.attempt_listeners:
-            listener(attempt)
+            try:
+                listener(attempt)
+            except Exception:  # a broken logger must never eat a finished plan
+                traceback.print_exc()
         return attempt
 
-    def plan_async(self, on_done: Callable[[Attempt], None], seed: Optional[int] = None) -> None:
-        """One plan at a time; `on_done` fires on the worker thread."""
+    def plan_async(
+        self, on_done: Callable[[Optional[Attempt]], None], seed: Optional[int] = None
+    ) -> None:
+        """One plan at a time; `on_done` fires on the worker thread — with None if the plan
+        itself raised (so the UI can recover instead of wedging)."""
         if self.is_planning:
             raise RuntimeError("a plan is already running")
 
         def run() -> None:
-            on_done(self.plan(seed))
+            attempt: Optional[Attempt] = None
+            try:
+                attempt = self.plan(seed)
+            except Exception:
+                traceback.print_exc()
+            on_done(attempt)
 
         self._plan_thread = threading.Thread(target=run, name="quevedomp-plan", daemon=True)
         self._plan_thread.start()

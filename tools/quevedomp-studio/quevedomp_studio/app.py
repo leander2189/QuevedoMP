@@ -222,9 +222,14 @@ class StudioApp:
         self._show_attempt(attempt)
         return attempt
 
-    def _on_plan_done(self, attempt: Attempt) -> None:
-        self._show_attempt(attempt)
-        self.plan_button.disabled = False
+    def _on_plan_done(self, attempt: Optional[Attempt]) -> None:
+        try:
+            if attempt is None:
+                self.plan_status.value = "ERROR — see server console"
+            else:
+                self._show_attempt(attempt)
+        finally:
+            self.plan_button.disabled = False
 
     def _show_attempt(self, attempt: Attempt) -> None:
         self._last_attempt = attempt

@@ -82,6 +82,43 @@ def test_session_save_load_round_trip(tmp_path: Path, session: StudioSession) ->
     session.remove_obstacle("keeper")
 
 
+def test_rerun_logger_records_attempts(tmp_path: Path, session: StudioSession) -> None:
+    from quevedomp_studio.rerun_log import RerunLogger
+
+    rrd = tmp_path / "attempts.rrd"
+    logger = RerunLogger(session, str(rrd), ee_link="wrist_3_link")
+    try:
+        session.set_start(np.zeros(6))
+        session.set_goal_joints(GOAL)
+        attempt = session.plan(seed=3)
+        assert attempt.result.ok()
+    finally:
+        session.attempt_listeners.remove(logger.log_attempt)
+    assert rrd.exists() and rrd.stat().st_size > 0
+
+
+def test_broken_listener_does_not_eat_the_plan(session: StudioSession) -> None:
+    def bad_listener(_attempt) -> None:
+        raise RuntimeError("boom")
+
+    session.attempt_listeners.append(bad_listener)
+    try:
+        session.set_start(np.zeros(6))
+        session.set_goal_joints(GOAL)
+        attempt = session.plan(seed=4)  # must not raise
+        assert attempt.result.ok()
+    finally:
+        session.attempt_listeners.remove(bad_listener)
+
+
+def test_fixture_shorthand_builds_sessions() -> None:
+    from quevedomp_studio.__main__ import FIXTURE_ROBOTS, fixture_session
+
+    for name in FIXTURE_ROBOTS:
+        s = fixture_session(name)  # resolves URDF + all mesh dirs, builds the scene
+        assert s.dof >= 2, name
+
+
 # ---- Full app, headless viser server -------------------------------------------------------------
 
 

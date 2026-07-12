@@ -33,7 +33,7 @@ class RerunLogger:
 
     def log_attempt(self, attempt: Attempt) -> None:
         rr = self.rr
-        rr.set_time_sequence("attempt", attempt.index)
+        rr.set_time("attempt", sequence=attempt.index)  # rerun >= 0.23 API (0.33.1 pinned)
         r = attempt.result
 
         stats = r.stats

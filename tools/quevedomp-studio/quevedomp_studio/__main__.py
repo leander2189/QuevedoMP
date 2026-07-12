@@ -1,4 +1,4 @@
-"""CLI: python -m quevedomp_studio --urdf robot.urdf [--package-dir pkg=/dir ...]"""
+"""CLI: python -m quevedomp_studio --fixture ur5 | --urdf robot.urdf [--package-dir pkg=/dir ...]"""
 
 from __future__ import annotations
 
@@ -8,10 +8,32 @@ from pathlib import Path
 from .app import StudioApp
 from .session import StudioSession
 
+# Repo fixture robots (tests/fixtures/robots), with the mesh map the C++ Task 1.4b tests use:
+# packages are unique across all five, and iiwa resolves relative paths against its own subdir.
+REPO_ROOT = Path(__file__).resolve().parents[3]
+FIXTURE_ROBOTS = ("ur5", "ur10", "panda", "iiwa", "irb2400")
+FIXTURE_BASE_SUBDIR = {"iiwa": "kuka_iiwa"}
+
+
+def fixture_session(name: str) -> StudioSession:
+    robots = REPO_ROOT / "tests" / "fixtures" / "robots"
+    meshes = robots / "meshes"
+    base_subdir = FIXTURE_BASE_SUBDIR.get(name, "")
+    return StudioSession(
+        (robots / f"{name}.urdf").read_text(),
+        package_dirs={
+            "example-robot-data": str(meshes / "example-robot-data"),
+            "collision": str(meshes / "abb_irb2400" / "collision"),
+        },
+        base_dir=str(meshes / base_subdir) if base_subdir else "",
+    )
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="quevedomp-studio",
                                      description="QuevedoMP Motion Planning IDE (ADR-016)")
+    parser.add_argument("--fixture", choices=FIXTURE_ROBOTS,
+                        help="load a repo fixture robot (mesh dirs wired automatically)")
     parser.add_argument("--urdf", help="URDF file to load")
     parser.add_argument("--load", help="a .qmps session file saved by the studio")
     parser.add_argument("--package-dir", action="append", default=[], metavar="PKG=DIR",
@@ -24,10 +46,13 @@ def main() -> None:
                         help="log every planning attempt to this rerun recording")
     args = parser.parse_args()
 
-    if bool(args.urdf) == bool(args.load):
-        parser.error("exactly one of --urdf or --load is required")
+    sources = [bool(args.fixture), bool(args.urdf), bool(args.load)]
+    if sum(sources) != 1:
+        parser.error("exactly one of --fixture, --urdf, or --load is required")
 
-    if args.load:
+    if args.fixture:
+        session = fixture_session(args.fixture)
+    elif args.load:
         session = StudioSession.load(args.load)
     else:
         package_dirs = dict(spec.split("=", 1) for spec in args.package_dir)
