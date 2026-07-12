@@ -1,0 +1,43 @@
+# quevedomp-studio
+
+Interactive Motion Planning IDE for QuevedoMP (ADR-016, Task 4a.6). Pure Python, outside the
+C++ build: **viser** serves the 3D editor (joint sliders, IK drag gizmo, obstacle gizmos,
+Plan + scrub), **rerun** optionally records every planning attempt with its `PlanningStats`.
+
+## Running (dev container)
+
+The `quevedomp` package comes from the `dev-py` build tree until Phase 4b ships a wheel:
+
+```bash
+# 1. Build the bindings once:  cmake --preset dev-py && cmake --build --preset dev-py
+# 2. From the repo root, in the container (publish the UI port):
+docker run --rm -p 8080:8080 -v "$PWD":/work -w /work quevedomp-cuda bash -lc '
+  PYTHONPATH=build/dev-py/bindings/python:tools/quevedomp-studio \
+  python3 -m quevedomp_studio \
+    --urdf tests/fixtures/robots/ur5.urdf \
+    --package-dir example-robot-data=tests/fixtures/robots/meshes/example-robot-data \
+    --rerun-save /work/studio-session.rrd'
+# 3. Open http://localhost:8080
+```
+
+## Workflow
+
+1. **Pose** the robot with the joint sliders, or drag the **IK gizmo** (the selected leaf link
+   follows; the status line shows convergence and the robot tints red on collision, witness
+   pair named).
+2. **Obstacles**: add box/sphere/cylinder, drag them with their gizmos; collision state updates
+   live (`CollisionScene.add/move/remove_object` under the hood — no scene rebuild).
+3. **Plan**: capture *Set start* / *Set goal* (joint-space, or check *goal = IK gizmo pose* for
+   a `PoseGoal`), pick timeout/seed/smoothing, hit **Plan**. Planning runs on a worker thread —
+   the bindings release the GIL, so the UI stays live. The result draws as the end-effector
+   trace; **scrub** animates the robot along the path.
+4. **Sessions** save/load via the Task 2a.5 serializers (`StudioSession.save/.load`), the same
+   blobs Phase 3b capture bundles will carry.
+
+## Headless smoke test
+
+```bash
+docker run --rm -v "$PWD":/work -w /work quevedomp-cuda bash -lc '
+  PYTHONPATH=build/dev-py/bindings/python:tools/quevedomp-studio \
+  python3 -m pytest tools/quevedomp-studio/tests -q'
+```

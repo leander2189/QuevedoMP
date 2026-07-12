@@ -42,6 +42,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # (predates TypeVarTuple), so this one comes from pip.
 RUN pip install --no-cache-dir "typing_extensions>=4.6"
 
+# quevedomp-studio (Task 4a.6, ADR-016): viser drives the interactive 3D UI; rerun-sdk pinned to
+# the same version as the C++ SDK (0.33.1) so .rrd files and viewers stay compatible.
+RUN pip install --no-cache-dir "viser>=0.2.20" "rerun-sdk==0.33.1"
+
 # Optional OptiX SDK install (login-gated installer, never committed — gitignored).
 # Usage:
 #   1. Copy the installer into .devcontainer/optix/

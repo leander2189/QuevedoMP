@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quevedomp-studio"
+version = "0.1.0.dev0"
+description = "Interactive Motion Planning IDE for QuevedoMP (viser + rerun), ADR-016 Task 4a.6"
+requires-python = ">=3.10"
+# `quevedomp` itself is intentionally NOT listed: until Phase 4b ships a wheel it comes from the
+# build tree (PYTHONPATH=<repo>/build/dev-py/bindings/python). See README.md.
+dependencies = [
+    "numpy",
+    "viser>=0.2.20",
+    "rerun-sdk==0.33.1",
+]
+
+[project.scripts]
+quevedomp-studio = "quevedomp_studio.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["quevedomp_studio*"]
