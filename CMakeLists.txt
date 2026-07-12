@@ -72,6 +72,7 @@ add_library(quevedomp
   src/collision/fcl_scene.cpp
   src/collision/containment.cpp
   src/collision/edge_check.cpp
+  src/collision/tessellate.cpp
   src/planning/types.cpp
   src/planning/planner.cpp
   src/planning/rrt_connect.cpp

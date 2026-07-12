@@ -13,10 +13,11 @@
 // parity rays for watertight meshes.
 //
 // v0 scope (minimal boolean, per the build-plan decision): boolean only (opts.distance unsupported
-// -> throws; exact distance stays with FCL per spec §4.5); environment GAS geometry is Box or Mesh
-// (sphere/cylinder GAS tessellation is a follow-up; note containment still handles them analytically
-// on the CPU); robot rays come from MESH collision links. The scene is static (build via
-// make_static_scene; no post-build add/move/remove yet).
+// -> throws; exact distance stays with FCL per spec §4.5). Every geometry type is ingested:
+// environment spheres/cylinders and robot primitive collision links ride the GAS/ray path via
+// closed tessellations (Task 3.3d P2; collision/tessellate.hpp — sub-mm inscribed error at the
+// default segment counts; containment still handles env primitives analytically on the CPU). The
+// scene is static (build via make_static_scene; no post-build add/move/remove yet).
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
@@ -43,6 +44,7 @@
 #include "quevedomp/robot/mesh_resolver.hpp"
 
 #include "../containment.hpp"
+#include "../tessellate.hpp"
 #include "launch_params.hpp"
 
 namespace quevedomp::collision {
@@ -465,9 +467,10 @@ private:
         append_box(verts, tris, b->half_extents, o.pose);
       else if (const auto *m = std::get_if<Mesh>(&o.geometry))
         append_mesh(verts, tris, *m, o.pose);
-      else
-        throw std::runtime_error(
-            "OptixScene: environment sphere/cylinder not tessellated in v0 (use a box or mesh)");
+      else if (const auto *s = std::get_if<SphereShape>(&o.geometry))
+        append_mesh(verts, tris, tessellate_sphere(s->radius), o.pose);
+      else if (const auto *c = std::get_if<CylinderShape>(&o.geometry))
+        append_mesh(verts, tris, tessellate_cylinder(c->radius, c->length), o.pose);
     }
     if (tris.empty())
       return; // empty environment: gas_ stays 0, robot-vs-env skipped
@@ -546,15 +549,30 @@ private:
       Eigen::Vector3d lo = Eigen::Vector3d::Constant(std::numeric_limits<double>::infinity());
       Eigen::Vector3d hi = Eigen::Vector3d::Constant(-std::numeric_limits<double>::infinity());
       for (const CollisionGeometry &cg : links[li].collisions) {
-        if (cg.type != GeometryType::Mesh)
-          continue; // OptiX robot geometry is mesh-based (documented)
-        Mesh m =
-            load_mesh(resolve_mesh_uri(cg.mesh_filename, meshes.package_dirs, meshes.base_dir));
+        // Primitive collision geometry rides the same edge-ray path as meshes via closed
+        // tessellations (Task 3.3d P2; previously primitives were silently skipped — unsound).
+        Mesh m;
+        Eigen::Vector3d scale = Eigen::Vector3d::Ones();
+        switch (cg.type) {
+        case GeometryType::Mesh:
+          m = load_mesh(resolve_mesh_uri(cg.mesh_filename, meshes.package_dirs, meshes.base_dir));
+          scale = cg.mesh_scale;
+          break;
+        case GeometryType::Box:
+          m = tessellate_box(cg.box_half_extents);
+          break;
+        case GeometryType::Sphere:
+          m = tessellate_sphere(cg.sphere_radius);
+          break;
+        case GeometryType::Cylinder:
+          m = tessellate_cylinder(cg.cylinder_radius, cg.cylinder_length);
+          break;
+        }
         // Link-frame vertices: apply URDF <mesh scale> then the collision origin.
         std::vector<Eigen::Vector3d> lv;
         lv.reserve(m.vertices.size());
         for (const Eigen::Vector3d &v : m.vertices)
-          lv.push_back(cg.origin * v.cwiseProduct(cg.mesh_scale));
+          lv.push_back(cg.origin * v.cwiseProduct(scale));
         link_interior_.push_back({li, mesh_centroid(lv)}); // ADR-012 interior point (link frame)
         const int slot = static_cast<int>(ray_link_slots_.size());
         std::map<std::pair<int, int>, char> seen; // dedup shared edges within this mesh

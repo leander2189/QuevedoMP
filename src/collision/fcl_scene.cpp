@@ -543,19 +543,14 @@ private:
   bool optix_stale_ = false;
 };
 
-// Auto may route to OptiX only when the GPU path tests ALL robot-vs-environment geometry: OptiX
-// casts rays from MESH collision links only, so a robot with any primitive collision link would
-// false-free against the environment. (Primitive-only environments are fine — the OptiX scene
-// build throws on unsupported env geometry and Auto falls back to FCL.)
-bool robot_all_mesh_collisions(const RobotModel &model) {
-  bool any = false;
+// Auto may route to OptiX whenever the robot has ANY collision geometry: since Task 3.3d P2 the
+// GPU path ingests primitive collision links too (closed tessellations, collision/tessellate.hpp),
+// so nothing is silently skipped. A collision-free robot has no rays to cast — keep FCL.
+bool robot_has_collision_geometry(const RobotModel &model) {
   for (const Link &l : model.links())
-    for (const CollisionGeometry &cg : l.collisions) {
-      if (cg.type != GeometryType::Mesh)
-        return false;
-      any = true;
-    }
-  return any;
+    if (!l.collisions.empty())
+      return true;
+  return false;
 }
 
 } // namespace
@@ -589,7 +584,7 @@ std::unique_ptr<CollisionScene> make_static_scene(std::shared_ptr<const RobotMod
   // Auto = hybrid (Task 2b.3 item 1) when the robot is OptiX-eligible and the GPU scene builds.
   // Any failure (unsupported env geometry, no usable GPU/driver at runtime) falls back to the
   // FCL-only scene Auto has always returned — Auto never throws where FCL alone would work.
-  if (hint == BackendHint::Auto && robot_all_mesh_collisions(*robot)) {
+  if (hint == BackendHint::Auto && robot_has_collision_geometry(*robot)) {
     try {
       auto optix = make_optix_scene(robot, environment, meshes);
       return std::make_unique<HybridScene>(std::move(scene), std::move(optix));
