@@ -8,6 +8,7 @@ the (smoothed) path.
 
 from __future__ import annotations
 
+import threading
 import time
 from typing import Optional
 
@@ -32,6 +33,10 @@ class StudioApp:
         self.obstacle_view = ObstacleView(self.server, session)
         self._path_nodes: list = []
         self._obstacle_counter = 0
+        # viser callbacks can run concurrently; the session's UI workspace is one-per-thread
+        # (ADR-005), so every query/IK from a callback goes through this lock.
+        self._ui_lock = threading.Lock()
+        self._playing = False
 
         self._build_robot_panel()
         self._build_ik_panel()
@@ -67,7 +72,8 @@ class StudioApp:
         self.refresh()
 
     def refresh(self) -> None:
-        state = self.robot_view.update_config(self.session.q)
+        with self._ui_lock:
+            state = self.robot_view.update_config(self.session.q)
         if state.in_collision:
             witness = f" ({state.witness.a} ↔ {state.witness.b})" if state.witness else ""
             self.status.value = f"COLLIDING{witness}"
@@ -83,11 +89,14 @@ class StudioApp:
                                                         initial_value=links[0])
             self.ik_status = self.server.gui.add_text("ik", initial_value="—", disabled=True)
             snap = self.server.gui.add_button("Snap gizmo to link")
+            solve_global = self.server.gui.add_button("Solve (global, multi-restart)")
 
         self.ik_gizmo = self.server.scene.add_transform_controls("/ik_target", scale=0.25)
+        self._ik_busy = False
         self._snap_gizmo()
 
         snap.on_click(lambda _e: self._snap_gizmo())
+        solve_global.on_click(lambda _e: self._on_ik_solve(interactive=False))
         self.ik_gizmo.on_update(lambda _e: self._on_ik_gizmo())
         self.ik_link.on_update(lambda _e: self._snap_gizmo())
 
@@ -97,17 +106,35 @@ class StudioApp:
         self.ik_gizmo.wxyz = pose.quaternion()
 
     def _on_ik_gizmo(self) -> None:
-        target = q.Transform.from_parts(
-            np.asarray(self.ik_gizmo.position), np.asarray(self.ik_gizmo.wxyz)
-        )
-        result = self.session.solve_ik(self.ik_link.value, target)
-        if result.success:
-            self.ik_status.value = (
-                f"ok · {result.iterations} iters · pos {result.pos_error * 1e3:.2f} mm"
+        # Drop events that arrive while a solve is running (a drag emits dozens); the next
+        # event re-solves from the latest gizmo pose, so tracking never falls behind.
+        if self._ik_busy:
+            return
+        self._on_ik_solve(interactive=True)
+
+    def _on_ik_solve(self, interactive: bool) -> None:
+        self._ik_busy = True
+        try:
+            target = q.Transform.from_parts(
+                np.asarray(self.ik_gizmo.position), np.asarray(self.ik_gizmo.wxyz)
             )
-            self.set_config(result.q)
-        else:
-            self.ik_status.value = f"FAILED · pos {result.pos_error * 1e3:.1f} mm"
+            with self._ui_lock:
+                result = self.session.solve_ik(self.ik_link.value, target,
+                                               interactive=interactive)
+            if result.success:
+                mode = "track" if interactive else "global"
+                self.ik_status.value = (
+                    f"{mode} ok · {result.iterations} iters · pos {result.pos_error * 1e3:.2f} mm"
+                )
+                self.set_config(result.q)
+            elif interactive:
+                # Tracking failure = out of reach from the current branch: hold the pose
+                # instead of teleporting; "Solve (global)" is the explicit branch switch.
+                self.ik_status.value = f"out of reach · pos {result.pos_error * 1e3:.1f} mm"
+            else:
+                self.ik_status.value = f"global FAILED · pos {result.pos_error * 1e3:.1f} mm"
+        finally:
+            self._ik_busy = False
 
     # ---- Obstacles -------------------------------------------------------------------------
 
@@ -183,15 +210,23 @@ class StudioApp:
             self.use_ik_goal = self.server.gui.add_checkbox("goal = IK gizmo pose", initial_value=False)
             self.timeout = self.server.gui.add_number("timeout (s)", initial_value=2.0, min=0.1, max=60.0)
             self.seed = self.server.gui.add_number("seed (0 = auto)", initial_value=0, min=0, max=2**31)
+            self.edge_res = self.server.gui.add_number(
+                "edge check step (rad|m)", initial_value=self.session.planner_params.edge_resolution,
+                min=0.001, max=0.2, step=0.001,
+            )
             self.do_smooth = self.server.gui.add_checkbox("shortcut smoothing", initial_value=True)
             self.plan_button = self.server.gui.add_button("Plan")
             self.plan_status = self.server.gui.add_text("result", initial_value="—", disabled=True)
-            self.scrub = self.server.gui.add_slider("scrub", min=0.0, max=1.0, step=0.005,
+            self.scrub = self.server.gui.add_slider("scrub", min=0.0, max=1.0, step=0.002,
                                                     initial_value=0.0)
+            self.play_button = self.server.gui.add_button("▶ Play")
+            self.play_speed = self.server.gui.add_number("play speed (rad/s)", initial_value=0.5,
+                                                         min=0.05, max=5.0)
 
         set_start.on_click(lambda _e: self._set_start())
         set_goal.on_click(lambda _e: self._set_goal())
         self.plan_button.on_click(lambda _e: self._on_plan_clicked())
+        self.play_button.on_click(lambda _e: self._on_play_clicked())
         self.scrub.on_update(lambda _e: self._on_scrub())
         self._start_marker: Optional[object] = None
         self._goal_marker: Optional[object] = None
@@ -231,6 +266,7 @@ class StudioApp:
             return
         self.session.timeout = float(self.timeout.value)
         self.session.smooth = bool(self.do_smooth.value)
+        self.session.planner_params.edge_resolution = float(self.edge_res.value)
         seed = int(self.seed.value) or None
         self.plan_status.value = "planning…"
         self.plan_button.disabled = True
@@ -269,14 +305,19 @@ class StudioApp:
     def _draw_path(self, path) -> None:
         self._clear_path()
         model, ee = self.session.model, self._ee()
-        points = np.array([q.fk(model, w, ee).translation() for w in path])
+        # Waypoint markers show the plan's structure; the curve is the TRUE end-effector path —
+        # FK sampled along the joint-space interpolation, not a straight polyline between
+        # waypoints (in Cartesian space the EE arcs between joint-space waypoints).
+        waypoints = np.array([q.fk(model, w, ee).translation() for w in path])
+        dense = self.session.sample_path(path, samples_per_segment=12)
+        curve = np.array([q.fk(model, w, ee).translation() for w in dense])
         self._path_nodes.append(
             self.server.scene.add_point_cloud(
-                "/plan/path_points", points=points,
-                colors=np.tile(np.array([PATH_COLOR]), (len(points), 1)), point_size=0.008,
+                "/plan/waypoints", points=waypoints,
+                colors=np.tile(np.array([PATH_COLOR]), (len(waypoints), 1)), point_size=0.008,
             )
         )
-        segments = np.stack([points[:-1], points[1:]], axis=1)
+        segments = np.stack([curve[:-1], curve[1:]], axis=1)
         self._path_nodes.append(
             self.server.scene.add_line_segments(
                 "/plan/path", points=segments,
@@ -298,6 +339,52 @@ class StudioApp:
         frac = t - i
         q_at = (1.0 - frac) * attempt.path[i] + frac * attempt.path[i + 1]
         self.set_config(q_at)
+
+    # ---- Play ------------------------------------------------------------------------------
+
+    def _on_play_clicked(self) -> None:
+        if self._playing:
+            self._playing = False  # acts as a Stop button while running
+            return
+        self.play(blocking=False)
+
+    def play(self, blocking: bool = False, duration: Optional[float] = None) -> None:
+        """Animate the robot along the last path at constant joint speed via the scrub slider."""
+        attempt = self._last_attempt
+        if attempt is None or len(attempt.path) < 2 or self._playing:
+            return
+        if duration is None:
+            length = sum(
+                float(np.max(np.abs(b - a))) for a, b in zip(attempt.path, attempt.path[1:])
+            )
+            duration = float(np.clip(length / float(self.play_speed.value), 0.5, 60.0))
+
+        def set_label(text: str) -> None:
+            try:
+                self.play_button.label = text
+            except AttributeError:  # older viser: label immutable — Play just re-runs
+                pass
+
+        def run() -> None:
+            self._playing = True
+            start = time.monotonic()
+            try:
+                set_label("■ Stop")
+                while self._playing:
+                    t = (time.monotonic() - start) / duration
+                    self.scrub.value = min(t, 1.0)
+                    self._on_scrub()
+                    if t >= 1.0:
+                        break
+                    time.sleep(1.0 / 30.0)
+            finally:
+                self._playing = False
+                set_label("▶ Play")
+
+        if blocking:
+            run()
+        else:
+            threading.Thread(target=run, name="quevedomp-play", daemon=True).start()
 
     # ---- Lifecycle -------------------------------------------------------------------------
 

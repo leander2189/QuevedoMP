@@ -123,6 +123,16 @@ class StudioSession:
         self.attempt_listeners: list[Callable[[Attempt], None]] = []
         self._plan_thread: Optional[threading.Thread] = None
         self._ik = q.make_numerical_ik(self.model)
+        # Interactive tracker: seeded-only (no random restarts). Restarts are what make gizmo
+        # dragging flicker — each stall re-seeds randomly and lands on a different branch.
+        track_options = q.IkOptions()
+        track_options.max_restarts = 0
+        track_options.max_iters = 60
+        self._ik_track = q.make_numerical_ik(self.model, track_options)
+
+        # Interactive queries default to a finer edge check than the library's 0.05 rad/m —
+        # at studio scale the discretization gap is visible when scrubbing a planned path.
+        self.planner_params.edge_resolution = 0.02
 
     # ---- Robot state ---------------------------------------------------------------------------
 
@@ -164,8 +174,30 @@ class StudioSession:
             self.robot, self.q if q_at is None else np.asarray(q_at, dtype=float), opts, self._ws
         )
 
-    def solve_ik(self, link: str, target: "q.Transform", seed: Optional[np.ndarray] = None):
-        return self._ik.solve(link, target, self.q if seed is None else seed)
+    def solve_ik(
+        self,
+        link: str,
+        target: "q.Transform",
+        seed: Optional[np.ndarray] = None,
+        interactive: bool = False,
+    ):
+        """interactive=True: seeded-only tracking (fast, branch-stable, may fail out of reach);
+        False: the full multi-restart solver (global, may switch branches)."""
+        solver = self._ik_track if interactive else self._ik
+        return solver.solve(link, target, self.q if seed is None else seed)
+
+    @staticmethod
+    def sample_path(path, samples_per_segment: int = 8) -> np.ndarray:
+        """Densify a joint-space path by linear interpolation: the TRUE motion between
+        waypoints (what the EE actually traces), not the waypoint polyline."""
+        if len(path) < 2:
+            return np.asarray(path, dtype=float).reshape(len(path), -1)
+        out = []
+        for a, b in zip(path, path[1:]):
+            for t in np.linspace(0.0, 1.0, samples_per_segment, endpoint=False):
+                out.append((1.0 - t) * a + t * b)
+        out.append(np.asarray(path[-1], dtype=float))
+        return np.array(out)
 
     # ---- Environment ---------------------------------------------------------------------------
 

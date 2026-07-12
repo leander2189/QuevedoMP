@@ -175,6 +175,26 @@ def test_app_renders_robot(app: StudioApp) -> None:
     assert len(app.sliders) == 6
 
 
+def test_interactive_ik_is_stable(session: StudioSession) -> None:
+    # Seeded-only tracking: same seed + same target => identical solution, every time (no
+    # random restarts to hop branches — the gizmo-flicker regression gate).
+    target = q.fk(session.model, GOAL, "wrist_3_link")
+    a = session.solve_ik("wrist_3_link", target, seed=GOAL + 0.05, interactive=True)
+    b = session.solve_ik("wrist_3_link", target, seed=GOAL + 0.05, interactive=True)
+    assert a.success and b.success
+    assert a.restarts == 0 and b.restarts == 0
+    assert np.allclose(a.q, b.q)
+
+
+def test_sample_path_endpoints_and_density() -> None:
+    path = [np.array([0.0, 0.0]), np.array([1.0, 0.0]), np.array([1.0, 1.0])]
+    dense = StudioSession.sample_path(path, samples_per_segment=8)
+    assert dense.shape == (17, 2)  # 2 segments x 8 + final waypoint
+    assert np.allclose(dense[0], path[0])
+    assert np.allclose(dense[-1], path[-1])
+    assert np.allclose(dense[8], path[1])  # waypoints are ON the dense curve
+
+
 def test_app_obstacle_plan_and_scrub(app: StudioApp) -> None:
     # The scripted version of the manual session: obstacle -> start/goal -> plan -> scrub.
     # (UR5 at zeros reaches horizontally through x~0.45, z~0 — keep the obstacle above that.)
@@ -196,3 +216,11 @@ def test_app_obstacle_plan_and_scrub(app: StudioApp) -> None:
     app.scrub.value = 0.5
     app._on_scrub()  # animates the robot to mid-path without raising
     assert app.session.q.shape == (6,)
+
+
+def test_app_play_animates_to_the_end(app: StudioApp) -> None:
+    assert app._last_attempt is not None  # planned by the previous test (same module fixture)
+    app.scrub.value = 0.0
+    app.play(blocking=True, duration=0.3)
+    assert app.scrub.value == 1.0
+    assert not app._playing
