@@ -24,6 +24,20 @@ GeometryLike = Union["q.BoxShape", "q.SphereShape", "q.CylinderShape", "q.Mesh"]
 SAVE_FORMAT = "quevedomp-studio/1"
 
 
+def load_srdf_acm(srdf_xml: str, acm) -> int:
+    """Populate an ACM from an SRDF's <disable_collisions link1=.. link2=..> entries (the same
+    subset the C++ DTC harness reads). Returns the number of pairs added."""
+    import xml.etree.ElementTree as ET
+
+    count = 0
+    for elem in ET.fromstring(srdf_xml).iter("disable_collisions"):
+        a, b = elem.get("link1"), elem.get("link2")
+        if a and b:
+            acm.allow(a, b)
+            count += 1
+    return count
+
+
 @dataclass
 class Obstacle:
     id: str
@@ -73,6 +87,7 @@ class StudioSession:
         base_dir: str = "",
         yaml_extension: Optional[str] = None,
         allow_adjacent: bool = True,
+        srdf_text: Optional[str] = None,
     ) -> None:
         self.model = q.RobotModel.from_urdf(urdf_text, yaml_extension)
         self.robot = q.RobotInstance(self.model)
@@ -84,6 +99,9 @@ class StudioSession:
         if allow_adjacent:
             for joint in self.model.joints:
                 self.robot.acm.allow(joint.parent_link, joint.child_link)
+        # An SRDF supplies the full curated matrix (permanent contacts, never-colliding pairs).
+        if srdf_text:
+            load_srdf_acm(srdf_text, self.robot.acm)
 
         self.mesh_sources = q.MeshSources(self.package_dirs, self.base_dir)
         self.scene = q.make_static_scene(

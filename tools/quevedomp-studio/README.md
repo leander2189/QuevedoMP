@@ -18,9 +18,10 @@ docker run --rm -p 8080:8080 -v "$PWD":/work -w /work quevedomp-cuda bash -lc '
 ```
 
 The robot is chosen at launch — one robot per session in v0. `--fixture {ur5,ur10,panda,iiwa,
-irb2400}` loads a repo fixture with its mesh directories wired automatically; for any other
-robot pass `--urdf` plus `--package-dir PKG=DIR` (repeatable) / `--base-dir`, exactly like the
-C++ `MeshSources`.
+irb2400,rbrobout,rbrobout_inlet}` loads a repo fixture with its mesh directories (and, for the
+DTC cells, the SRDF-derived ACM) wired automatically; for any other robot pass `--urdf` plus
+`--package-dir PKG=DIR` (repeatable) / `--base-dir` / `--srdf`, exactly like the C++
+`MeshSources` + DTC harness.
 
 ## Workflow
 

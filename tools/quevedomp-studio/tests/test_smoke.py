@@ -119,6 +119,17 @@ def test_fixture_shorthand_builds_sessions() -> None:
         assert s.dof >= 2, name
 
 
+def test_rbrobout_inlet_srdf_acm_makes_rest_pose_free() -> None:
+    # Without the SRDF ACM the baked EE / lift contacts read as self-collision and every
+    # planning problem is rejected at the start config; the SRDF must clear the rest pose.
+    from quevedomp_studio.__main__ import fixture_session
+
+    s = fixture_session("rbrobout_inlet")
+    adjacent_only = len([j for j in s.model.joints])
+    assert len(s.robot.acm) > adjacent_only  # SRDF pairs actually loaded
+    assert not s.collision_state(np.zeros(s.dof)).in_collision
+
+
 # ---- Full app, headless viser server -------------------------------------------------------------
 
 
