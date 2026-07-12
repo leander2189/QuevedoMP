@@ -849,6 +849,22 @@ Every implementation, sampling- or optimization-based, satisfies:
   over Task 3.3 shortcut output at equal success rate; standalone mode solves the easy subset
   within the polished budget; every output re-validated collision-free by the exact backend.
 
+### Task 3.3d — (NEW, 2026-07-12) studio-profiling follow-ups
+
+Profiling the inlet cell end to end through the Python bindings (`examples/python/
+inlet_plan_profile.py`; rbrobout_inlet + work object, 3.4 rad sweep, edge 0.01, seeds 16–18)
+attributed the cost precisely — collision is 99.9% of plan time; planner logic is 2–3 ms — and
+surfaced these follow-ups, roughly in value order:
+
+| # | Task | Evidence |
+|---|------|----------|
+| P1 | **Studio/bindings run Release** (`release-py` preset added; studio README updated). | Same problem, same seeds: Debug 33.8 s → Release 2.4 s (14×). Debug was the studio default. |
+| P2 | **Tessellate primitive robot collision geometry for the OptiX backend** (and env sphere/cylinder). Until then the flagship inlet cell cannot ride the GPU: `Auto` requires an all-mesh robot, and pure OptiX silently *skips* non-mesh robot geometry (`optix_scene.cpp` mesh-only ingest) — unsound for rbrobout's dress-kit primitives. | Batch histogram is GPU-shaped (9–13 of 10–14 queries ≥ 256 configs, top sizes 345/2300) — exactly the fat batches the hybrid crossover wants. |
+| P3 | **Cartesian-bounded edge discretization**: per-joint weights w_i (max distal lever arm, metres/rad) with step chosen so Σ w_i·Δq_i ≤ d (e.g. 5 mm max link sweep), replacing the uniform per-joint `edge_resolution`. Same guarantee stated in workspace terms, fewer wasted configs on low-lever joints, finer where it matters. | 54–77k configs/plan at edge 0.01; a 3.44 rad pan edge alone is 345 configs regardless of which joints move. |
+| P4 | **ACM must cover robot-vs-environment pairs** (fcl_scene consults it only for self-collision; the OptiX backend likewise). The AllowedCollisionMatrix doc already promises "link/object ids". Needed for allowed-contact workflows (dress kits vs work object make every near-duct goal infeasible today). | Witness sweep: all IK branches at every approach offset collide via dresskit_*×work_object. |
+| P5 | **Goal sampling budget**: PoseGoal sampling gives up after ~3–5 IK branches ("all goal configurations are in collision"); cluttered cells need dozens + interleaved resampling during search. | Same sweep: feasible-looking poses rejected instantly with 3–5 sampled configs. |
+| P6 | **Time-budgeted smoothing**: shortcut smoothing costs as much as planning (2–3.6 s Release at 200 iterations, all in edge re-validation) — the Task 3.5 pipeline should budget it, and Task 3.3b (SDF clearance smoothing) remains the structural fix. | Smoothing 3.6 s vs plan 2.4 s on seed 16. |
+
 ### Task 3.4 — `ToppRaParameterization`
 - Time-optimal under joint + TCP vel/acc.
 - Note: no apt package — this triggers the deferred vcpkg/FetchContent decision (deviation

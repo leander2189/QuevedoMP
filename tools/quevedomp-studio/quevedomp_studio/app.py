@@ -37,6 +37,7 @@ class StudioApp:
         # (ADR-005), so every query/IK from a callback goes through this lock.
         self._ui_lock = threading.Lock()
         self._playing = False
+        self._syncing_sliders = False
 
         self._build_robot_panel()
         self._build_ik_panel()
@@ -61,14 +62,23 @@ class StudioApp:
                 self.sliders.append(slider)
 
     def _on_sliders(self) -> None:
+        # Programmatic slider writes (set_config) fire this too — mid-sync the slider set is
+        # half new / half stale, and rebuilding the config from it walks the robot through
+        # mixed configurations (the "scrub looks like IK" bug). The guard drops those events.
+        if self._syncing_sliders:
+            return
         self.session.set_config(np.array([s.value for s in self.sliders]))
         self.refresh()
 
     def set_config(self, q_new: np.ndarray) -> None:
-        """Set config from code (IK / scrub): syncs sliders without feedback loops."""
+        """Set config from code (IK / scrub / play): syncs sliders without feedback loops."""
         self.session.set_config(q_new)
-        for slider, value in zip(self.sliders, q_new):
-            slider.value = float(value)
+        self._syncing_sliders = True
+        try:
+            for slider, value in zip(self.sliders, q_new):
+                slider.value = float(value)
+        finally:
+            self._syncing_sliders = False
         self.refresh()
 
     def refresh(self) -> None:

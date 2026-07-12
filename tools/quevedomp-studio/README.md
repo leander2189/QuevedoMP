@@ -9,10 +9,11 @@ Plan + scrub), **rerun** optionally records every planning attempt with its `Pla
 The `quevedomp` package comes from the `dev-py` build tree until Phase 4b ships a wheel:
 
 ```bash
-# 1. Build the bindings once:  cmake --preset dev-py && cmake --build --preset dev-py
+# 1. Build the bindings once (Release — the Debug dev-py build plans ~14x slower):
+#    cmake --preset release-py && cmake --build --preset release-py
 # 2. From the repo root, in the container (publish the UI port):
 docker run --rm -p 8080:8080 -v "$PWD":/work -w /work quevedomp-cuda bash -lc '
-  PYTHONPATH=build/dev-py/bindings/python:tools/quevedomp-studio \
+  PYTHONPATH=build/release-py/bindings/python:tools/quevedomp-studio \
   python3 -m quevedomp_studio --fixture ur5 --rerun-save /work/studio-session.rrd'
 # 3. Open http://localhost:8080
 ```

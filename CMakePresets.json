@@ -74,6 +74,20 @@
       }
     },
     {
+      "name": "release-py",
+      "displayName": "Release, CUDA + OptiX + Python (studio performance)",
+      "description": "Optimized bindings build for quevedomp-studio and Python benchmarks. OptiX is compiled in; at runtime BackendHint.Auto falls back to FCL when no GPU is passed through, so the same build serves CPU-only and --gpus sessions.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/release-py",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "QUEVEDOMP_WITH_CUDA": "ON",
+        "QUEVEDOMP_WITH_OPTIX": "ON",
+        "QUEVEDOMP_WITH_PYTHON": "ON",
+        "QUEVEDOMP_ENABLE_SANITIZERS": "OFF"
+      }
+    },
+    {
       "name": "coverage",
       "displayName": "Debug, gcov coverage (Task 1.9 gate)",
       "description": "g++ --coverage, no sanitizers; build + ctest, then gcovr to gate line coverage in core/robot/kinematics.",
@@ -153,6 +167,7 @@
     { "name": "dev-viz",   "configurePreset": "dev-viz",
       "environment": { "CMAKE_POLICY_VERSION_MINIMUM": "3.5" } },
     { "name": "dev-py",    "configurePreset": "dev-py" },
+    { "name": "release-py", "configurePreset": "release-py" },
     { "name": "coverage",  "configurePreset": "coverage" },
     { "name": "fuzz",      "configurePreset": "fuzz" },
     { "name": "release",   "configurePreset": "release" },
