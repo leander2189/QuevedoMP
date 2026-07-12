@@ -399,3 +399,37 @@ TEST(FclBackend, MoveAndRemoveObject) {
   scene->remove_object(h2);
   EXPECT_FALSE(scene->query(robot, JointPosition(), opts, *ws).in_collision);
 }
+
+// Task 3.3d P7a — the OpenMP-parallel batch path must agree config-for-config with serial
+// single-config queries (which stay below the parallel threshold), for boolean AND distance.
+TEST(FclBatchParallel, MatchesSerialSingles) {
+  const auto model = RobotModel::from_urdf(kPrismaticRobot);
+  const RobotInstance robot(model);
+  SceneDescription env;
+  env.objects.push_back({"obj", SphereShape{0.3}, at_x(1.8)});
+  const auto scene = make_static_scene(model, env, BackendHint::ForceCpuFcl);
+  const auto ws = scene->make_workspace();
+
+  // Sweep q through self-colliding (q < -0.4), free, env-colliding (q ~ [0.2, 1.4]), free again.
+  std::vector<JointPosition> qs;
+  for (int i = 0; i < 96; ++i) {
+    JointPosition q(1);
+    q << -1.0 + 3.0 * i / 95.0;
+    qs.push_back(q);
+  }
+
+  for (const bool with_distance : {false, true}) {
+    QueryOptions opts;
+    opts.distance = with_distance;
+    opts.max_distance = 10.0f;
+    const BatchResult batch = scene->query_batch(robot, qs, opts, *ws);
+    ASSERT_EQ(batch.in_collision.size(), qs.size());
+    for (std::size_t i = 0; i < qs.size(); ++i) {
+      const CollisionResult single = scene->query(robot, qs[i], opts, *ws);
+      EXPECT_EQ(batch.in_collision[i] != 0, single.in_collision)
+          << "config " << i << " distance=" << with_distance;
+      if (with_distance)
+        EXPECT_FLOAT_EQ(batch.min_distance[i], single.min_distance) << "config " << i;
+    }
+  }
+}

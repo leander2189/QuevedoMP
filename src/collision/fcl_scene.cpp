@@ -20,6 +20,7 @@
 // and mesh, robot and environment) then funnel through the identical FCL collide path.
 #include "quevedomp/collision/collision_scene.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
@@ -38,6 +39,10 @@
 #include <fcl/geometry/shape/sphere.h>
 #include <fcl/narrowphase/collision.h>
 #include <fcl/narrowphase/collision_object.h>
+
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 #include <fcl/narrowphase/distance.h>
 
 #include "quevedomp/core/mesh_io.hpp"
@@ -339,8 +344,21 @@ public:
     manager_.setup();
   }
 
+  // Internal sub-workspaces for the parallel batch path (Task 3.3d P7a): one query_batch call
+  // fans its configs across threads, thread 0 posing *this and thread t > 0 posing pool_[t-1] —
+  // the same one-workspace-per-thread pattern ADR-005 requires of CALLERS, applied internally.
+  // Grown before the parallel region (never concurrently) and kept across batches.
+  FclWorkspace &for_thread(std::size_t t) { return t == 0 ? *this : *pool_[t - 1]; }
+  void ensure_pool(const FclScene &scene, std::size_t threads) {
+    while (pool_.size() + 1 < threads)
+      pool_.push_back(std::make_unique<FclWorkspace>(scene));
+  }
+
   std::vector<std::unique_ptr<FclObject>> objects_;
   FclManager manager_;
+
+private:
+  std::vector<std::unique_ptr<FclWorkspace>> pool_;
 };
 
 std::unique_ptr<Workspace> FclScene::make_workspace() const {
@@ -428,22 +446,24 @@ BatchResult FclScene::query_batch(const RobotInstance &robot, std::span<const Jo
   // ADR-012 containment: BVH triangle-triangle misses a robot mesh link fully inside an obstacle.
   const bool do_containment = !link_interior_.empty();
   if (do_containment)
-    ensure_containment();
+    ensure_containment(); // mutable rebuild happens BEFORE any parallel region
 
-  for (std::size_t i = 0; i < qs.size(); ++i) {
+  // One config, evaluated in workspace `w`. Writes only out[i] — disjoint across configs, so
+  // results are identical whether configs run serially or fanned across threads.
+  const auto process = [&](std::size_t i, FclWorkspace &w) {
     const std::vector<Transform> link_poses = fk_all(model, qs[i]);
     for (std::size_t s = 0; s < link_shapes_.size(); ++s) {
       const LinkShape &ls = link_shapes_[s];
-      fws.objects_[s]->setTransform(to_fcl(link_poses[ls.link_index] * ls.origin));
-      fws.objects_[s]->computeAABB();
+      w.objects_[s]->setTransform(to_fcl(link_poses[ls.link_index] * ls.origin));
+      w.objects_[s]->computeAABB();
     }
-    fws.manager_.update();
+    w.manager_.update();
 
     bool hit;
     if (!need_distance) {
-      hit = boolean_query(robot, fws, opts);
+      hit = boolean_query(robot, w, opts);
     } else {
-      const DistEval e = distance_query(robot, fws, opts);
+      const DistEval e = distance_query(robot, w, opts);
       hit = e.signed_distance < opts.safety_margin;
       if (want_distance) {
         const double clamped = e.signed_distance > opts.max_distance
@@ -462,7 +482,27 @@ BatchResult FclScene::query_batch(const RobotInstance &robot, std::span<const Jo
         }
     }
     out.in_collision[i] = hit ? 1 : 0;
+  };
+
+#ifdef _OPENMP
+  // Task 3.3d P7a: fan a fat batch across cores. Shared state is read-only during the region
+  // (env_manager_/containment_ traversals — the same sharing ADR-005's concurrent-caller
+  // contract already permits); every mutable object is per-thread via the workspace pool.
+  // Threshold skips fork overhead for the tiny batches the hybrid routes to FCL anyway.
+  constexpr std::size_t kParallelBatch = 8;
+  if (qs.size() >= kParallelBatch) {
+    const std::size_t threads =
+        std::min<std::size_t>(static_cast<std::size_t>(omp_get_max_threads()), qs.size());
+    fws.ensure_pool(*this, threads);
+#pragma omp parallel for schedule(dynamic, 8) num_threads(static_cast <int>(threads))
+    for (std::ptrdiff_t i = 0; i < static_cast<std::ptrdiff_t>(qs.size()); ++i)
+      process(static_cast<std::size_t>(i),
+              fws.for_thread(static_cast<std::size_t>(omp_get_thread_num())));
+    return out;
   }
+#endif
+  for (std::size_t i = 0; i < qs.size(); ++i)
+    process(i, fws);
   return out;
 }
 

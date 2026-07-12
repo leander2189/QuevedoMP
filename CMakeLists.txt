@@ -87,6 +87,15 @@ target_compile_features(quevedomp PUBLIC cxx_std_20)
 target_link_libraries(quevedomp PUBLIC Eigen3::Eigen)
 target_link_libraries(quevedomp PRIVATE ${urdfdom_LIBRARIES} yaml-cpp assimp::assimp fcl)
 
+# OpenMP parallelizes fat collision batches across configs (Task 3.3d P7a: the FCL backend's
+# query_batch, and the OptiX backend's host FK loop). Optional: without it those loops run
+# serially, results identical.
+find_package(OpenMP QUIET)
+if(OpenMP_CXX_FOUND)
+  target_link_libraries(quevedomp PRIVATE OpenMP::OpenMP_CXX)
+  message(STATUS "OpenMP: parallel collision batches")
+endif()
+
 # ---- Optional rerun.io visualization (Task 1.8, deviation D3) -----------------------------
 # OFF by default: viz/visualizer.cpp compiles to no-ops and the SDK is never fetched. When ON,
 # pull the prebuilt rerun C++ SDK (matches the `rerun` viewer / `pip install rerun-sdk==0.33.1`).
@@ -145,13 +154,7 @@ if(QUEVEDOMP_WITH_OPTIX)
   target_include_directories(quevedomp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/collision/optix)
   target_link_libraries(quevedomp PRIVATE OptiX::OptiX CUDA::cudart)
 
-  # OpenMP parallelizes the host FK / transform-fill loop in the OptiX backend's query_batch
-  # (one fk_all per config, disjoint output slices). Optional: without it the loop runs serially.
-  find_package(OpenMP QUIET)
-  if(OpenMP_CXX_FOUND)
-    target_link_libraries(quevedomp PRIVATE OpenMP::OpenMP_CXX)
-    message(STATUS "OpenMP: parallel host FK in the OptiX backend")
-  endif()
+  # (OpenMP for the host FK loop comes from the core library's OpenMP link above.)
   target_compile_definitions(quevedomp
     PRIVATE QUEVEDOMP_WITH_OPTIX
             QUEVEDOMP_OPTIX_PTX_PATH="$<TARGET_OBJECTS:quevedomp_optix_ptx>")
