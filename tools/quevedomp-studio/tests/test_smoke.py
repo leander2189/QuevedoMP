@@ -51,6 +51,15 @@ def test_session_obstacle_toggles_collision(session: StudioSession) -> None:
     session.remove_obstacle("probe")
 
 
+def test_session_plan_with_auto_seed(session: StudioSession) -> None:
+    # The studio Plan button with "seed (0 = auto)" left at 0 passes seed=None.
+    session.set_start(np.zeros(6))
+    session.set_goal_joints(GOAL)
+    attempt = session.plan(seed=None)
+    assert attempt.result.ok(), attempt.result.message
+    session.goal = None
+
+
 def test_session_plan_and_listeners(session: StudioSession) -> None:
     seen = []
     session.attempt_listeners.append(seen.append)

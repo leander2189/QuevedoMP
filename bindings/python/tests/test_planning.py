@@ -145,6 +145,21 @@ def test_multi_goal_reaches_one() -> None:
     assert min(np.linalg.norm(end - g1), np.linalg.norm(end - g2)) < 1e-2
 
 
+def test_auto_seed_via_none() -> None:
+    # The studio's "seed 0 = auto" path: optional<> fields must accept None.
+    model, robot, scene = make_fixture(False)
+    planner = q.make_planner(q.PlannerParams(), robot, scene)
+    p = problem_to([-1, -1], [1, -1])
+    p.seed = None  # regression: this raised TypeError before the .none() setter fix
+    assert p.seed is None
+    r = planner.plan(p)
+    assert r.ok()
+
+    opts = q.QueryOptions()
+    opts.per_pair_padding = None  # the other optional<> setter
+    assert opts.per_pair_padding is None
+
+
 def test_invalid_problem_detected_without_search() -> None:
     model, robot, scene = make_fixture(False)
     planner = q.make_planner(q.PlannerParams(), robot, scene)

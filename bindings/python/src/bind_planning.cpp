@@ -75,7 +75,9 @@ void bind_planning(nb::module_ &m) {
       .def_rw("task_limits", &PlanningProblem::task_limits)
       .def_rw("collision", &PlanningProblem::collision)
       .def_rw("timeout", &PlanningProblem::timeout)
-      .def_rw("seed", &PlanningProblem::seed);
+      // optional<> setters must explicitly allow None (nanobind rejects it otherwise).
+      .def_rw("seed", &PlanningProblem::seed, nb::for_setter(nb::arg("value").none()),
+              "Fixed seed for determinism; None = auto-generated.");
 
   m.def("validate", &validate, "problem"_a, "model"_a,
         "Structural check; returns a human-readable reason if ill-formed, else None.");

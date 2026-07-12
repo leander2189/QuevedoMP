@@ -114,7 +114,9 @@ void bind_collision(nb::module_ &m) {
       .def_rw("robot_padding", &QueryOptions::robot_padding)
       .def_rw("max_distance", &QueryOptions::max_distance)
       .def_rw("check_self_collision", &QueryOptions::check_self_collision)
-      .def_rw("per_pair_padding", &QueryOptions::per_pair_padding);
+      // optional<> setters must explicitly allow None (nanobind rejects it otherwise).
+      .def_rw("per_pair_padding", &QueryOptions::per_pair_padding,
+              nb::for_setter(nb::arg("value").none()));
 
   nb::class_<CollisionPair>(m, "CollisionPair", "Witness pair, for debug/visualization.")
       .def_ro("a", &CollisionPair::a)
