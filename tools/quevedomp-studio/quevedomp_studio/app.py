@@ -77,10 +77,10 @@ class StudioApp:
     # ---- IK panel --------------------------------------------------------------------------
 
     def _build_ik_panel(self) -> None:
-        leaves = self.session.leaf_links() or [self.session.model.root_link]
+        links = self.session.ik_links() or self.session.leaf_links() or [self.session.model.root_link]
         with self.server.gui.add_folder("IK"):
-            self.ik_link = self.server.gui.add_dropdown("link", options=tuple(leaves),
-                                                        initial_value=leaves[-1])
+            self.ik_link = self.server.gui.add_dropdown("link", options=tuple(links),
+                                                        initial_value=links[0])
             self.ik_status = self.server.gui.add_text("ik", initial_value="—", disabled=True)
             snap = self.server.gui.add_button("Snap gizmo to link")
 
@@ -117,6 +117,10 @@ class StudioApp:
                                                 initial_value="box")
             size = self.server.gui.add_number("size (m)", initial_value=0.2, min=0.01, max=2.0)
             add = self.server.gui.add_button("Add obstacle")
+            mesh_path = self.server.gui.add_text("mesh file", initial_value="")
+            add_mesh = self.server.gui.add_button("Add mesh obstacle")
+            self.obstacle_status = self.server.gui.add_text("obstacles", initial_value="—",
+                                                            disabled=True)
             self.obstacle_pick = self.server.gui.add_dropdown("selected", options=("—",),
                                                               initial_value="—")
             remove = self.server.gui.add_button("Remove selected")
@@ -132,6 +136,21 @@ class StudioApp:
             }[kind.value]()
             self.add_obstacle(oid, geometry, q.Transform.from_translation(np.array([0.5, 0.0, s / 2.0])))
 
+        def on_add_mesh(_e) -> None:
+            path = mesh_path.value.strip()
+            if not path:
+                self.obstacle_status.value = "enter a mesh path (STL/DAE/OBJ)"
+                return
+            try:
+                mesh = q.load_mesh(path)  # normalized to metres, GIL released
+            except RuntimeError as error:
+                self.obstacle_status.value = f"load failed: {error}"
+                return
+            self._obstacle_counter += 1
+            oid = f"mesh_{self._obstacle_counter}"
+            self.add_obstacle(oid, mesh, q.Transform.from_translation(np.array([0.5, 0.0, 0.0])))
+            self.obstacle_status.value = f"{oid}: {mesh.vertices.shape[0]} verts"
+
         def on_remove(_e) -> None:
             oid = self.obstacle_pick.value
             if oid in self.session.obstacles:
@@ -141,6 +160,7 @@ class StudioApp:
                 self.refresh()
 
         add.on_click(on_add)
+        add_mesh.on_click(on_add_mesh)
         remove.on_click(on_remove)
 
     def add_obstacle(self, oid: str, geometry, pose) -> None:

@@ -136,6 +136,19 @@ class StudioSession:
     def leaf_links(self) -> list[str]:
         return [l.name for l in self.model.links if not l.child_joints]
 
+    def ik_links(self) -> list[str]:
+        """Leaf links IK can actually move: >= 2 movable joints in their chain, ordered most-
+        articulated first, TCP/tool/EE-named links ahead of ties. (A robot cell URDF is full of
+        static frames — cameras, fiducials, racks — that made a naive 'last leaf' default dead.)"""
+        joints = self.model.joints
+        scored = []
+        for name in self.leaf_links():
+            movable = sum(1 for ji in self.model.chain_to(name).joints if joints[ji].is_movable())
+            if movable >= 2:
+                preferred = any(tag in name.lower() for tag in ("tcp", "tool", "tip", "ee"))
+                scored.append((-movable, not preferred, name))
+        return [name for _, _, name in sorted(scored)]
+
     def set_config(self, q_new: np.ndarray) -> None:
         self.q = np.asarray(q_new, dtype=float).copy()
 
