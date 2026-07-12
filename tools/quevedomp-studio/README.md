@@ -35,8 +35,11 @@ DTC cells, the SRDF-derived ACM) wired automatically; for any other robot pass `
    a `PoseGoal`), pick timeout/seed/smoothing, hit **Plan**. Planning runs on a worker thread —
    the bindings release the GIL, so the UI stays live. The result draws as the end-effector
    trace; **scrub** animates the robot along the path.
-4. **Sessions** save/load via the Task 2a.5 serializers (`StudioSession.save/.load`), the same
-   blobs Phase 3b capture bundles will carry.
+4. **Sessions**: the *Session* panel saves/loads the whole problem setup — robot + ACM and
+   obstacles (Task 2a.5 serializer blobs, the same format Phase 3b capture bundles will carry)
+   plus start/goal, timeout, edge step, and planner settings — so a benchmark problem is one
+   *Load* away. Paths resolve inside the container (e.g. `sessions/scene.qmps` lands in the
+   repo, next to where `--load` picks it up at launch).
 
 ## Headless smoke test
 

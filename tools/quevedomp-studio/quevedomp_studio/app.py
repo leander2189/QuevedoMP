@@ -29,21 +29,94 @@ class StudioApp:
     def __init__(self, session: StudioSession, host: str = "0.0.0.0", port: int = 8080) -> None:
         self.session = session
         self.server = viser.ViserServer(host=host, port=port, label="quevedomp-studio")
-        self.robot_view = RobotView(self.server, session)
-        self.obstacle_view = ObstacleView(self.server, session)
-        self._path_nodes: list = []
-        self._obstacle_counter = 0
         # viser callbacks can run concurrently; the session's UI workspace is one-per-thread
         # (ADR-005), so every query/IK from a callback goes through this lock.
         self._ui_lock = threading.Lock()
+        self._mount()
+
+    def _mount(self) -> None:
+        """Build (or rebuild, after load_session) the whole scene + GUI over self.session."""
+        self.robot_view = RobotView(self.server, self.session)
+        self.obstacle_view = ObstacleView(self.server, self.session)
+        self._path_nodes: list = []
+        self._obstacle_counter = len(self.session.obstacles)
         self._playing = False
         self._syncing_sliders = False
 
+        self._build_session_panel()
         self._build_robot_panel()
         self._build_ik_panel()
         self._build_obstacle_panel()
         self._build_planning_panel()
-        self.refresh()
+
+        # A loaded session already carries obstacles + a configured problem: render them.
+        for obstacle in self.session.obstacles.values():
+            self.obstacle_view.add(obstacle, on_moved=lambda _id: self.refresh())
+        if self.session.obstacles:
+            self._sync_obstacle_pick()
+        self.set_config(self.session.q)  # syncs sliders + collision tint
+        self._restore_plan_markers()
+
+    def load_session(self, path: str) -> None:
+        """Swap in a saved session: tear down every scene node + GUI panel and remount."""
+        if self.session.is_planning:
+            raise RuntimeError("cannot load while a plan is running")
+        new_session = StudioSession.load(path)
+        self._playing = False
+        with self._ui_lock:
+            self.session = new_session
+            self.server.scene.reset()
+            self.server.gui.reset()
+        self._mount()
+
+    def _restore_plan_markers(self) -> None:
+        goal = self.session.goal
+        if goal is None:
+            return
+        self._start_marker = self._marker("/plan/start", self.session.start, START_COLOR)
+        if goal.kind == "joint" and goal.q is not None:
+            self._goal_marker = self._marker("/plan/goal", goal.q, GOAL_COLOR)
+        elif goal.pose is not None:
+            self.ik_gizmo.position = goal.pose.translation()
+            self.ik_gizmo.wxyz = goal.pose.quaternion()
+            self._goal_marker = self.server.scene.add_point_cloud(
+                "/plan/goal", points=goal.pose.translation()[None, :],
+                colors=np.array([GOAL_COLOR]), point_size=0.025,
+            )
+
+    # ---- Session panel -----------------------------------------------------------------------
+
+    def _build_session_panel(self) -> None:
+        with self.server.gui.add_folder("Session"):
+            self.session_path = self.server.gui.add_text("file", initial_value="sessions/scene.qmps")
+            save_btn = self.server.gui.add_button("Save session")
+            load_btn = self.server.gui.add_button("Load session")
+            self.session_status = self.server.gui.add_text("io", initial_value="—", disabled=True)
+
+        save_btn.on_click(lambda _e: self._on_save_session())
+        load_btn.on_click(lambda _e: self._on_load_session())
+
+    def _on_save_session(self) -> None:
+        # Pull the live widget values into the session so the file captures what's on screen.
+        self.session.timeout = float(self.timeout.value)
+        self.session.smooth = bool(self.do_smooth.value)
+        self.session.planner_params.edge_resolution = float(self.edge_res.value)
+        try:
+            self.session.save(self.session_path.value.strip())
+            self.session_status.value = f"saved {self.session_path.value.strip()}"
+        except OSError as error:
+            self.session_status.value = f"save failed: {error}"
+
+    def _on_load_session(self) -> None:
+        path = self.session_path.value.strip()
+        try:
+            self.load_session(path)
+        except (OSError, ValueError, RuntimeError) as error:
+            self.session_status.value = f"load failed: {error}"
+            return
+        # _mount rebuilt every widget, including session_status — set the fresh one.
+        self.session_path.value = path
+        self.session_status.value = f"loaded {path}"
 
     # ---- Robot panel -----------------------------------------------------------------------
 
@@ -218,13 +291,15 @@ class StudioApp:
             set_start = self.server.gui.add_button("Set start = current")
             set_goal = self.server.gui.add_button("Set goal = current")
             self.use_ik_goal = self.server.gui.add_checkbox("goal = IK gizmo pose", initial_value=False)
-            self.timeout = self.server.gui.add_number("timeout (s)", initial_value=2.0, min=0.1, max=60.0)
+            self.timeout = self.server.gui.add_number("timeout (s)", initial_value=float(self.session.timeout),
+                                                      min=0.1, max=60.0)
             self.seed = self.server.gui.add_number("seed (0 = auto)", initial_value=0, min=0, max=2**31)
             self.edge_res = self.server.gui.add_number(
                 "edge check step (rad|m)", initial_value=self.session.planner_params.edge_resolution,
                 min=0.001, max=0.2, step=0.001,
             )
-            self.do_smooth = self.server.gui.add_checkbox("shortcut smoothing", initial_value=True)
+            self.do_smooth = self.server.gui.add_checkbox("shortcut smoothing",
+                                                          initial_value=bool(self.session.smooth))
             self.plan_button = self.server.gui.add_button("Plan")
             self.plan_status = self.server.gui.add_text("result", initial_value="—", disabled=True)
             self.scrub = self.server.gui.add_slider("scrub", min=0.0, max=1.0, step=0.002,

@@ -224,3 +224,49 @@ def test_app_play_animates_to_the_end(app: StudioApp) -> None:
     app.play(blocking=True, duration=0.3)
     assert app.scrub.value == 1.0
     assert not app._playing
+
+
+def test_session_v2_round_trips_the_whole_problem(tmp_path: Path, session: StudioSession) -> None:
+    session.set_start(np.zeros(6))
+    session.set_goal_pose("wrist_3_link", q.fk(session.model, GOAL, "wrist_3_link"), pos_tol=5e-3)
+    session.planner_params.edge_resolution = 0.017
+    session.timeout = 7.5
+    session.smooth = False
+    file = tmp_path / "bench.qmps"
+    session.save(file)
+
+    back = StudioSession.load(file)
+    assert back.goal is not None and back.goal.kind == "pose"
+    assert back.goal.link == "wrist_3_link"
+    assert back.goal.pos_tol == pytest.approx(5e-3)
+    assert back.goal.pose.is_approx(session.goal.pose, 1e-9)
+    assert back.planner_params.edge_resolution == pytest.approx(0.017)
+    assert back.timeout == pytest.approx(7.5)
+    assert back.smooth is False
+    session.goal = None  # don't leak problem state into other tests
+    session.smooth = True
+
+
+def test_app_save_load_rebuilds_ui(tmp_path: Path, app: StudioApp) -> None:
+    # The in-UI benchmark loop: configure -> save -> load -> everything is back on screen.
+    app.add_obstacle(
+        "bench_box", q.BoxShape(np.array([0.1, 0.1, 0.1])),
+        q.Transform.from_translation(np.array([-0.6, -0.5, 0.2])),  # behind the robot: clear of GOAL
+    )
+    app.set_config(GOAL)
+    assert not app.session.collision_state(GOAL).in_collision
+    app._set_start()
+    app._set_goal()
+    file = str(tmp_path / "bench_ui.qmps")
+    app.session_path.value = file
+    app._on_save_session()
+    assert "saved" in app.session_status.value
+
+    app.load_session(file)
+    assert len(app.sliders) == 6  # UI rebuilt
+    assert "bench_box" in app.session.obstacles  # collision state restored...
+    assert "bench_box" in app.obstacle_view.nodes  # ...and rendered
+    assert app.session.goal is not None and app.session.goal.kind == "joint"
+    assert np.allclose(app.session.q, GOAL)
+    attempt = app.plan_now(seed=11)  # the restored problem is immediately plannable
+    assert attempt.result.ok(), attempt.result.message

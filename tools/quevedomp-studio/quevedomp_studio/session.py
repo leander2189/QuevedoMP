@@ -21,7 +21,15 @@ import quevedomp as q
 
 GeometryLike = Union["q.BoxShape", "q.SphereShape", "q.CylinderShape", "q.Mesh"]
 
-SAVE_FORMAT = "quevedomp-studio/1"
+SAVE_FORMAT = "quevedomp-studio/2"  # v2 adds goal/planner/query state; v1 files still load
+
+
+def _tf_to_json(tf: "q.Transform") -> dict:
+    return {"t": tf.translation().tolist(), "q_wxyz": tf.quaternion().tolist()}
+
+
+def _tf_from_json(blob: dict) -> "q.Transform":
+    return q.Transform.from_parts(np.asarray(blob["t"]), np.asarray(blob["q_wxyz"]))
 
 
 def load_srdf_acm(srdf_xml: str, acm) -> int:
@@ -298,6 +306,19 @@ class StudioSession:
     # ---- Save / load (Task 2a.5 serializers -> Phase 3b captures open here later) ---------------
 
     def save(self, path: str | Path) -> None:
+        """The full problem setup: robot+ACM and scene via the Task 2a.5 serializers, plus the
+        studio-level state (config, start/goal, planner + query settings) as plain JSON."""
+        goal = None
+        if self.goal is not None:
+            goal = {
+                "kind": self.goal.kind,
+                "q": None if self.goal.q is None else self.goal.q.tolist(),
+                "link": self.goal.link,
+                "pose": None if self.goal.pose is None else _tf_to_json(self.goal.pose),
+                "pos_tol": self.goal.pos_tol,
+                "rot_tol": self.goal.rot_tol,
+            }
+        p = self.planner_params
         blob = {
             "format": SAVE_FORMAT,
             "robot_instance": base64.b64encode(q.serialize_robot_instance(self.robot)).decode(),
@@ -306,14 +327,32 @@ class StudioSession:
             "base_dir": self.base_dir,
             "q": self.q.tolist(),
             "start": self.start.tolist(),
+            "goal": goal,
+            "timeout": self.timeout,
+            "smooth": self.smooth,
+            "planner": {
+                "algorithm": p.algorithm,
+                "edge_resolution": p.edge_resolution,
+                "max_extension": p.max_extension,
+                "goal_bias": p.goal_bias,
+                "batch_size": p.batch_size,
+                "max_iterations": p.max_iterations,
+            },
+            "query": {
+                "check_self_collision": self.query_options.check_self_collision,
+                "safety_margin": self.query_options.safety_margin,
+                "robot_padding": self.query_options.robot_padding,
+            },
         }
-        Path(path).write_text(json.dumps(blob, indent=2))
+        out = Path(path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(blob, indent=2))
 
     @classmethod
     def load(cls, path: str | Path) -> "StudioSession":
         blob = json.loads(Path(path).read_text())
-        if blob.get("format") != SAVE_FORMAT:
-            raise ValueError(f"not a {SAVE_FORMAT} file: {path}")
+        if blob.get("format") not in ("quevedomp-studio/1", SAVE_FORMAT):
+            raise ValueError(f"not a quevedomp-studio session file: {path}")
         robot = q.deserialize_robot_instance(base64.b64decode(blob["robot_instance"]))
         session = cls(
             robot.model.source_urdf,
@@ -329,4 +368,35 @@ class StudioSession:
             session.add_obstacle(obj.id, obj.geometry, obj.pose)
         session.set_config(np.asarray(blob["q"], dtype=float))
         session.set_start(np.asarray(blob["start"], dtype=float))
+
+        goal = blob.get("goal")
+        if goal is not None:
+            session.goal = GoalSpec(
+                goal["kind"],
+                q=None if goal.get("q") is None else np.asarray(goal["q"], dtype=float),
+                link=goal.get("link", ""),
+                pose=None if goal.get("pose") is None else _tf_from_json(goal["pose"]),
+                pos_tol=goal.get("pos_tol", 1e-3),
+                rot_tol=goal.get("rot_tol", 1e-2),
+            )
+        session.timeout = blob.get("timeout", session.timeout)
+        session.smooth = blob.get("smooth", session.smooth)
+        planner = blob.get("planner") or {}
+        p = session.planner_params
+        p.algorithm = planner.get("algorithm", p.algorithm)
+        p.edge_resolution = planner.get("edge_resolution", p.edge_resolution)
+        p.max_extension = planner.get("max_extension", p.max_extension)
+        p.goal_bias = planner.get("goal_bias", p.goal_bias)
+        p.batch_size = planner.get("batch_size", p.batch_size)
+        p.max_iterations = planner.get("max_iterations", p.max_iterations)
+        query = blob.get("query") or {}
+        session.query_options.check_self_collision = query.get(
+            "check_self_collision", session.query_options.check_self_collision
+        )
+        session.query_options.safety_margin = query.get(
+            "safety_margin", session.query_options.safety_margin
+        )
+        session.query_options.robot_padding = query.get(
+            "robot_padding", session.query_options.robot_padding
+        )
         return session
