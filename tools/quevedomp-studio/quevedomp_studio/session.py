@@ -74,6 +74,16 @@ class GoalSpec:
 
 
 @dataclass
+class IkBranch:
+    """One distinct IK solution (branch), collision-annotated against the current scene."""
+
+    q: np.ndarray
+    free: bool  # collision-free (self + environment, current query options)
+    pos_error: float
+    rot_error: float
+
+
+@dataclass
 class Attempt:
     """One planning attempt, kept for the attempt log / rerun export."""
 
@@ -193,6 +203,35 @@ class StudioSession:
         False: the full multi-restart solver (global, may switch branches)."""
         solver = self._ik_track if interactive else self._ik
         return solver.solve(link, target, self.q if seed is None else seed)
+
+    def solve_ik_branches(
+        self,
+        link: str,
+        target: "q.Transform",
+        n: int = 8,
+        seed: Optional[np.ndarray] = None,
+        cost: Optional[Callable[[np.ndarray], float]] = None,
+    ) -> list[IkBranch]:
+        """Up to `n` DISTINCT IK branches for `link` at `target`, each collision-checked against
+        the current scene. Default order: nearest the current config first (tracking); pass a
+        different `seed` config to order around it, or `cost` (q -> float, ascending) for a
+        custom ranking — e.g. joint-limit margin, elbow-up preference, distance to a home pose."""
+        io = q.IkOptions()
+        io.max_restarts = max(60, 12 * n)  # exploration budget scales with the ask
+        solver = q.make_numerical_ik(self.model, io)
+        seed_q = self.q if seed is None else np.asarray(seed, dtype=float)
+        branches = [
+            IkBranch(
+                np.asarray(r.q),
+                not self.collision_state(r.q).in_collision,
+                r.pos_error,
+                r.rot_error,
+            )
+            for r in solver.solve_all(link, target, n, seed_q)
+        ]
+        if cost is not None:
+            branches.sort(key=lambda b: cost(b.q))
+        return branches
 
     @staticmethod
     def sample_path(path, samples_per_segment: int = 8) -> np.ndarray:

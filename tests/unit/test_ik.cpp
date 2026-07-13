@@ -172,3 +172,87 @@ TEST_P(IkWarm, ConvergesQuicklyFromWarmSeed) {
 }
 
 INSTANTIATE_TEST_SUITE_P(Robots, IkWarm, ::testing::ValuesIn(kRobots), param_name);
+
+// --- solve_all: distinct IK branches (multi-solution) ----------------------------------------
+// A 6R arm has up to 8 IK branches per reachable pose; solve_all must find several DISTINCT ones
+// (all matching the target under fk), be deterministic per options.seed, and put the branch
+// nearest a given seed first (the tracking ordering).
+
+namespace {
+
+quevedomp::IkOptions branch_options() {
+  quevedomp::IkOptions o;
+  o.max_restarts = 80; // exploration budget: one attempt per restart
+  return o;
+}
+
+} // namespace
+
+TEST(IkSolveAll, FindsMultipleDistinctBranchesMatchingTarget) {
+  const auto model = RobotModel::from_urdf(read_fixture("robots/ur5.urdf"));
+  const std::string tip = tip_of(*model, "ur5.urdf");
+  const auto ik = make_numerical_ik(model, branch_options());
+
+  Rng rng(0xB4A2C7ULL);
+  const JointPosition q_true = sample_q(*model, rng);
+  const Transform target = fk(*model, q_true, tip);
+
+  const auto sols = ik->solve_all(tip, target, 8);
+  ASSERT_GE(sols.size(), 2u) << "a 6R pose should expose several branches";
+  for (std::size_t i = 0; i < sols.size(); ++i) {
+    EXPECT_TRUE(sols[i].success);
+    const Transform reached = fk(*model, sols[i].q, tip);
+    EXPECT_LT((reached.translation() - target.translation()).norm(), 1e-3);
+    EXPECT_LT(rot_error(reached, target), 1e-2);
+    for (std::size_t j = i + 1; j < sols.size(); ++j) {
+      EXPECT_GE((sols[i].q - sols[j].q).cwiseAbs().maxCoeff(), branch_options().branch_tol)
+          << "solutions " << i << " and " << j << " are the same branch";
+    }
+  }
+}
+
+TEST(IkSolveAll, DeterministicPerSeed) {
+  const auto model = RobotModel::from_urdf(read_fixture("robots/ur5.urdf"));
+  const std::string tip = tip_of(*model, "ur5.urdf");
+  const auto ik = make_numerical_ik(model, branch_options());
+
+  Rng rng(0x5EEDULL);
+  const Transform target = fk(*model, sample_q(*model, rng), tip);
+
+  const auto a = ik->solve_all(tip, target, 6);
+  const auto b = ik->solve_all(tip, target, 6);
+  ASSERT_EQ(a.size(), b.size());
+  for (std::size_t i = 0; i < a.size(); ++i)
+    EXPECT_TRUE(a[i].q.isApprox(b[i].q));
+}
+
+TEST(IkSolveAll, SeedOrdersNearestBranchFirst) {
+  const auto model = RobotModel::from_urdf(read_fixture("robots/ur5.urdf"));
+  const std::string tip = tip_of(*model, "ur5.urdf");
+  const auto ik = make_numerical_ik(model, branch_options());
+
+  Rng rng(0x0DE4ULL);
+  const Transform target = fk(*model, sample_q(*model, rng), tip);
+  const auto sols = ik->solve_all(tip, target, 8);
+  ASSERT_GE(sols.size(), 2u);
+
+  // Seed with the LAST discovered branch: it must come first, and distances must ascend.
+  const JointPosition seed = sols.back().q;
+  const auto ordered = ik->solve_all(tip, target, 8, seed);
+  ASSERT_GE(ordered.size(), 2u);
+  EXPECT_LT((ordered.front().q - seed).cwiseAbs().maxCoeff(), branch_options().branch_tol);
+  for (std::size_t i = 0; i + 1 < ordered.size(); ++i)
+    EXPECT_LE((ordered[i].q - seed).norm(), (ordered[i + 1].q - seed).norm());
+}
+
+TEST(IkSolveAll, UnreachableOrZeroBudgetIsEmpty) {
+  const auto model = RobotModel::from_urdf(read_fixture("robots/ur5.urdf"));
+  const std::string tip = tip_of(*model, "ur5.urdf");
+  const auto ik = make_numerical_ik(model, branch_options());
+
+  const Transform far = Transform::from_translation(Eigen::Vector3d(5, 0, 0));
+  EXPECT_TRUE(ik->solve_all(tip, far, 4).empty()); // out of reach: no best-effort entries
+  Rng rng(0x0FFULL);
+  const Transform target = fk(*model, sample_q(*model, rng), tip);
+  EXPECT_TRUE(ik->solve_all(tip, target, 0).empty());
+}

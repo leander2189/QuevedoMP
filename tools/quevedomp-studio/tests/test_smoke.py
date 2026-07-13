@@ -42,6 +42,25 @@ def test_session_ik(session: StudioSession) -> None:
     assert result.success
 
 
+def test_session_ik_branches(session: StudioSession) -> None:
+    target = q.fk(session.model, GOAL, "wrist_3_link")
+    branches = session.solve_ik_branches("wrist_3_link", target, n=6)
+    assert len(branches) >= 2  # a 6R pose exposes several branches
+    for b in branches:
+        reached = q.fk(session.model, b.q, "wrist_3_link")
+        assert np.linalg.norm(reached.translation() - target.translation()) < 1e-3
+        assert isinstance(b.free, bool)
+    # Default order: nearest the current config first.
+    here = session.q
+    dists = [np.linalg.norm(b.q - here) for b in branches]
+    assert dists == sorted(dists)
+    # Custom cost re-ranks (here: prefer the LAST branch by inverting the distance order).
+    ranked = session.solve_ik_branches(
+        "wrist_3_link", target, n=6, cost=lambda qq: -float(np.linalg.norm(qq - here))
+    )
+    assert np.allclose(ranked[0].q, branches[-1].q)
+
+
 def test_session_obstacle_toggles_collision(session: StudioSession) -> None:
     ee = q.fk(session.model, np.zeros(6), "wrist_3_link").translation()
     session.add_obstacle("probe", q.SphereShape(0.15), q.Transform.from_translation(ee))
@@ -193,6 +212,19 @@ def test_interactive_ik_is_stable(session: StudioSession) -> None:
     assert a.success and b.success
     assert a.restarts == 0 and b.restarts == 0
     assert np.allclose(a.q, b.q)
+
+
+def test_app_ik_branch_picker(app: StudioApp) -> None:
+    app.set_config(GOAL)
+    app._snap_gizmo()  # gizmo at a reachable pose (the current EE pose)
+    app._on_ik_branches()
+    assert len(app._ik_branches) >= 2
+    assert app.ik_branch_pick.options[0] != "—"
+    assert "branches" in app.ik_status.value
+    # Picking the last branch applies its config to the robot.
+    app.ik_branch_pick.value = app.ik_branch_pick.options[-1]
+    app._on_ik_branch_pick()
+    assert np.allclose(app.session.q, app._ik_branches[-1].q)
 
 
 def test_sample_path_endpoints_and_density() -> None:

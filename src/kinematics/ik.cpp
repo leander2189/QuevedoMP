@@ -60,55 +60,22 @@ public:
     int total_iters = 0;
 
     for (int restart = 0; restart <= opt_.max_restarts; ++restart) {
-      JointPosition q = (restart == 0 && seed.size() == dof) ? seed : random_config(rng);
-      double attempt_best = std::numeric_limits<double>::infinity();
-      int stall = 0;
-
-      for (int it = 0; it < opt_.max_iters; ++it) {
-        ++total_iters;
-        const Transform current = fk(*model_, q, link);
-        const Vector6 e = pose_error(target, current);
-        const double pe = e.head<3>().norm();
-        const double re = e.tail<3>().norm();
-
-        if (pe < opt_.pos_tol && re < opt_.rot_tol) {
-          IkResult r;
-          r.success = true;
-          r.q = q;
-          r.iterations = total_iters;
-          r.restarts = restart;
-          r.pos_error = pe;
-          r.rot_error = re;
-          return r;
-        }
-
-        const double score = pe + re;
-        if (score < best.pos_error + best.rot_error) {
-          best.q = q;
-          best.pos_error = pe;
-          best.rot_error = re;
-        }
-        // Stall detection: abandon a non-improving attempt and re-seed instead of grinding the
-        // full iteration budget near a singularity / local minimum.
-        if (score + opt_.stall_eps < attempt_best) {
-          attempt_best = score;
-          stall = 0;
-        } else if (++stall >= opt_.stall_iters) {
-          break;
-        }
-
-        // Damped least squares: Δq = Jᵀ (J Jᵀ + λ²I)⁻¹ e.
-        const Eigen::MatrixXd jac = jacobian(*model_, q, link);
-        const Eigen::Matrix<double, 6, 6> jjt =
-            jac * jac.transpose() +
-            (opt_.damping * opt_.damping) * Eigen::Matrix<double, 6, 6>::Identity();
-        Eigen::VectorXd dq = jac.transpose() * jjt.ldlt().solve(e);
-
-        const double n = dq.norm();
-        if (n > opt_.max_step)
-          dq *= opt_.max_step / n;
-        q += dq;
-        clamp(q);
+      const JointPosition q0 = (restart == 0 && seed.size() == dof) ? seed : random_config(rng);
+      const Attempt a = run_attempt(link, target, q0, total_iters);
+      if (a.success) {
+        IkResult r;
+        r.success = true;
+        r.q = a.q;
+        r.iterations = total_iters;
+        r.restarts = restart;
+        r.pos_error = a.pos_error;
+        r.rot_error = a.rot_error;
+        return r;
+      }
+      if (a.pos_error + a.rot_error < best.pos_error + best.rot_error) {
+        best.q = a.q;
+        best.pos_error = a.pos_error;
+        best.rot_error = a.rot_error;
       }
     }
 
@@ -117,7 +84,104 @@ public:
     return best;
   }
 
+  std::vector<IkResult> solve_all(const std::string &link, const Transform &target,
+                                  int max_solutions, const JointPosition &seed) const override {
+    std::vector<IkResult> out;
+    if (max_solutions <= 0)
+      return out;
+    const int dof = static_cast<int>(model_->dof());
+    Rng rng(opt_.seed); // same restart sequence as solve() — deterministic per options.seed
+    int total_iters = 0;
+
+    for (int restart = 0;
+         restart <= opt_.max_restarts && static_cast<int>(out.size()) < max_solutions; ++restart) {
+      const JointPosition q0 = (restart == 0 && seed.size() == dof) ? seed : random_config(rng);
+      const Attempt a = run_attempt(link, target, q0, total_iters);
+      if (!a.success)
+        continue;
+      const bool duplicate = std::any_of(out.begin(), out.end(), [&](const IkResult &r) {
+        return (r.q - a.q).cwiseAbs().maxCoeff() < opt_.branch_tol;
+      });
+      if (duplicate)
+        continue;
+      IkResult r;
+      r.success = true;
+      r.q = a.q;
+      r.iterations = total_iters;
+      r.restarts = restart;
+      r.pos_error = a.pos_error;
+      r.rot_error = a.rot_error;
+      out.push_back(std::move(r));
+    }
+
+    // Tracking bias: with a seed, the branch nearest the previous position comes first. Any other
+    // preference is a caller-side sort over this vector (its cost-function hook).
+    if (seed.size() == dof) {
+      std::stable_sort(out.begin(), out.end(), [&](const IkResult &a, const IkResult &b) {
+        return (a.q - seed).norm() < (b.q - seed).norm();
+      });
+    }
+    return out;
+  }
+
 private:
+  // One DLS attempt from `q`: iterate until tolerance, stall, or the iteration budget; returns
+  // the attempt's best configuration (success == reached tolerance). Accumulates `total_iters`.
+  struct Attempt {
+    bool success = false;
+    JointPosition q;
+    double pos_error = std::numeric_limits<double>::infinity();
+    double rot_error = std::numeric_limits<double>::infinity();
+  };
+
+  Attempt run_attempt(const std::string &link, const Transform &target, JointPosition q,
+                      int &total_iters) const {
+    Attempt best;
+    best.q = q;
+    double attempt_best = std::numeric_limits<double>::infinity();
+    int stall = 0;
+
+    for (int it = 0; it < opt_.max_iters; ++it) {
+      ++total_iters;
+      const Transform current = fk(*model_, q, link);
+      const Vector6 e = pose_error(target, current);
+      const double pe = e.head<3>().norm();
+      const double re = e.tail<3>().norm();
+
+      if (pe < opt_.pos_tol && re < opt_.rot_tol) {
+        return {true, q, pe, re};
+      }
+
+      const double score = pe + re;
+      if (score < best.pos_error + best.rot_error) {
+        best.q = q;
+        best.pos_error = pe;
+        best.rot_error = re;
+      }
+      // Stall detection: abandon a non-improving attempt and re-seed instead of grinding the
+      // full iteration budget near a singularity / local minimum.
+      if (score + opt_.stall_eps < attempt_best) {
+        attempt_best = score;
+        stall = 0;
+      } else if (++stall >= opt_.stall_iters) {
+        break;
+      }
+
+      // Damped least squares: Δq = Jᵀ (J Jᵀ + λ²I)⁻¹ e.
+      const Eigen::MatrixXd jac = jacobian(*model_, q, link);
+      const Eigen::Matrix<double, 6, 6> jjt =
+          jac * jac.transpose() +
+          (opt_.damping * opt_.damping) * Eigen::Matrix<double, 6, 6>::Identity();
+      Eigen::VectorXd dq = jac.transpose() * jjt.ldlt().solve(e);
+
+      const double n = dq.norm();
+      if (n > opt_.max_step)
+        dq *= opt_.max_step / n;
+      q += dq;
+      clamp(q);
+    }
+    return best;
+  }
   JointPosition random_config(Rng &rng) const {
     JointPosition q(static_cast<Eigen::Index>(sample_lo_.size()));
     for (Eigen::Index i = 0; i < q.size(); ++i) {

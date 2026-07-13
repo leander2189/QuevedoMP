@@ -174,13 +174,21 @@ class StudioApp:
             self.ik_status = self.server.gui.add_text("ik", initial_value="—", disabled=True)
             snap = self.server.gui.add_button("Snap gizmo to link")
             solve_global = self.server.gui.add_button("Solve (global, multi-restart)")
+            self.ik_branch_count = self.server.gui.add_number("branches to find", initial_value=8,
+                                                              min=2, max=20, step=1)
+            solve_branches = self.server.gui.add_button("Solve branches")
+            self.ik_branch_pick = self.server.gui.add_dropdown("branch", options=("—",),
+                                                               initial_value="—")
 
         self.ik_gizmo = self.server.scene.add_transform_controls("/ik_target", scale=0.25)
         self._ik_busy = False
+        self._ik_branches: list = []
         self._snap_gizmo()
 
         snap.on_click(lambda _e: self._snap_gizmo())
         solve_global.on_click(lambda _e: self._on_ik_solve(interactive=False))
+        solve_branches.on_click(lambda _e: self._on_ik_branches())
+        self.ik_branch_pick.on_update(lambda _e: self._on_ik_branch_pick())
         self.ik_gizmo.on_update(lambda _e: self._on_ik_gizmo())
         self.ik_link.on_update(lambda _e: self._snap_gizmo())
 
@@ -188,6 +196,48 @@ class StudioApp:
         pose = q.fk(self.session.model, self.session.q, self.ik_link.value)
         self.ik_gizmo.position = pose.translation()
         self.ik_gizmo.wxyz = pose.quaternion()
+
+    def _on_ik_branches(self) -> None:
+        """Solve N distinct branches for the gizmo pose and fill the picker (free ones marked)."""
+        if self._ik_busy:
+            return
+        self._ik_busy = True
+        try:
+            target = q.Transform.from_parts(
+                np.asarray(self.ik_gizmo.position), np.asarray(self.ik_gizmo.wxyz)
+            )
+            with self._ui_lock:
+                self._ik_branches = self.session.solve_ik_branches(
+                    self.ik_link.value, target, n=int(self.ik_branch_count.value)
+                )
+            if not self._ik_branches:
+                self.ik_branch_pick.options = ("—",)
+                self.ik_status.value = "no branches found (out of reach?)"
+                return
+            free = sum(b.free for b in self._ik_branches)
+            # Label = index · collision state · joint-space distance from the current config
+            # (the default ordering, nearest first).
+            here = self.session.q
+            options = tuple(
+                f"{i + 1}: {'free' if b.free else 'COLLIDES'} · Δ{np.linalg.norm(b.q - here):.2f}"
+                for i, b in enumerate(self._ik_branches)
+            )
+            self.ik_branch_pick.options = options
+            self.ik_branch_pick.value = options[0]
+            self.ik_status.value = f"{len(self._ik_branches)} branches · {free} collision-free"
+            self._apply_branch(0)
+        finally:
+            self._ik_busy = False
+
+    def _on_ik_branch_pick(self) -> None:
+        label = self.ik_branch_pick.value
+        if not self._ik_branches or label == "—":
+            return
+        self._apply_branch(int(label.split(":", 1)[0]) - 1)
+
+    def _apply_branch(self, index: int) -> None:
+        if 0 <= index < len(self._ik_branches):
+            self.set_config(self._ik_branches[index].q)
 
     def _on_ik_gizmo(self) -> None:
         # Drop events that arrive while a solve is running (a drag emits dozens); the next

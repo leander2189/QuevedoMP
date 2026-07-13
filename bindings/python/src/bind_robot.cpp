@@ -146,7 +146,9 @@ void bind_robot(nb::module_ &m) {
       .def_rw("stall_eps", &IkOptions::stall_eps)
       .def_rw("damping", &IkOptions::damping)
       .def_rw("max_step", &IkOptions::max_step)
-      .def_rw("seed", &IkOptions::seed);
+      .def_rw("seed", &IkOptions::seed)
+      .def_rw("branch_tol", &IkOptions::branch_tol,
+              "solve_all: solutions closer than this (max per-joint delta) are one branch.");
 
   nb::class_<IkResult>(m, "IkResult")
       .def_ro("success", &IkResult::success)
@@ -165,7 +167,13 @@ void bind_robot(nb::module_ &m) {
       .def("solve", &InverseKinematics::solve, "link"_a, "target"_a, "seed"_a = JointPosition(),
            nb::call_guard<nb::gil_scoped_release>(),
            "Solve for a configuration placing `link` at `target` (base frame). A seed of "
-           "size model.dof seeds the first attempt; further attempts re-seed randomly.");
+           "size model.dof seeds the first attempt; further attempts re-seed randomly.")
+      .def("solve_all", &InverseKinematics::solve_all, "link"_a, "target"_a, "max_solutions"_a,
+           "seed"_a = JointPosition(), nb::call_guard<nb::gil_scoped_release>(),
+           "Up to `max_solutions` DISTINCT IK branches (options.branch_tol apart), deterministic "
+           "per options.seed; raise options.max_restarts to explore more. With a seed, the "
+           "branch nearest it comes first (tracking); rank by any custom cost with "
+           "`sorted(solver.solve_all(...), key=lambda r: my_cost(r.q))`.");
 
   m.def("make_numerical_ik", &make_numerical_ik, "model"_a, "options"_a = IkOptions{},
         "Damped-least-squares numerical IK with multi-seed restart.");

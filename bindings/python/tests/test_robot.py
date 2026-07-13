@@ -117,6 +117,32 @@ def test_ik_round_trip_ur5(ur5: q.RobotModel) -> None:
     assert np.linalg.norm(reached.translation() - target.translation()) < 1e-4
 
 
+def test_ik_solve_all_branches(ur5: q.RobotModel) -> None:
+    q_ref = np.array([0.4, -1.1, 1.3, -0.7, 0.9, 0.2])
+    target = q.fk(ur5, q_ref, "wrist_3_link")
+    opts = q.IkOptions()
+    opts.max_restarts = 80
+    ik = q.make_numerical_ik(ur5, opts)
+
+    sols = ik.solve_all("wrist_3_link", target, 8)
+    assert len(sols) >= 2  # a 6R pose exposes several branches
+    for i, r in enumerate(sols):
+        assert r.success
+        reached = q.fk(ur5, r.q, "wrist_3_link")
+        assert np.linalg.norm(reached.translation() - target.translation()) < 1e-3
+        for other in sols[i + 1:]:
+            assert np.max(np.abs(r.q - other.q)) >= opts.branch_tol  # distinct branches
+
+    # Seeded call: the branch nearest the seed comes first (tracking order)...
+    ordered = ik.solve_all("wrist_3_link", target, 8, seed=q_ref)
+    assert np.max(np.abs(ordered[0].q - q_ref)) < 1e-2
+    # ...and any custom cost is a plain Python sort over the returned list.
+    farthest_first = sorted(sols, key=lambda r: -np.linalg.norm(r.q - q_ref))
+    assert np.linalg.norm(farthest_first[0].q - q_ref) >= np.linalg.norm(
+        farthest_first[-1].q - q_ref
+    )
+
+
 def test_ik_deterministic_per_seed(ur5: q.RobotModel) -> None:
     target = q.fk(ur5, np.array([0.3, -0.9, 1.1, -0.5, 0.7, 0.1]), "wrist_3_link")
     opts = q.IkOptions()
