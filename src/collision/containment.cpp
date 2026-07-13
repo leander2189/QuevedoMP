@@ -53,52 +53,65 @@ bool is_watertight(const Mesh &m) {
 } // namespace
 
 EnvContainment::EnvContainment(const SceneDescription &env) {
-  int mesh_id = 0;
-  for (const SceneObject &o : env.objects) {
+  for (int oi = 0; oi < static_cast<int>(env.objects.size()); ++oi) {
+    const SceneObject &o = env.objects[static_cast<std::size_t>(oi)];
     if (const auto *b = std::get_if<BoxShape>(&o.geometry)) {
-      boxes_.push_back({o.pose.inverse(), b->half_extents});
+      boxes_.push_back({oi, o.pose.inverse(), b->half_extents});
       has_solids_ = true;
     } else if (const auto *s = std::get_if<SphereShape>(&o.geometry)) {
-      spheres_.push_back({o.pose.translation(), s->radius});
+      spheres_.push_back({oi, o.pose.translation(), s->radius});
       has_solids_ = true;
     } else if (const auto *c = std::get_if<CylinderShape>(&o.geometry)) {
-      cyls_.push_back({o.pose.inverse(), c->radius, 0.5 * c->length});
+      cyls_.push_back({oi, o.pose.inverse(), c->radius, 0.5 * c->length});
       has_solids_ = true;
     } else if (const auto *m = std::get_if<Mesh>(&o.geometry)) {
-      const int id = mesh_id++;
       if (!is_watertight(*m)) {
         std::cerr << "[quevedomp] containment: environment mesh '"
-                  << (o.id.empty() ? std::to_string(id) : o.id)
+                  << (o.id.empty() ? std::to_string(oi) : o.id)
                   << "' is not watertight; containment inside it is undetectable (ADR-012)\n";
         continue;
       }
+      MeshSolid ms;
+      ms.object = oi;
+      ms.tris.reserve(m->triangles.size());
       for (const Eigen::Vector3i &t : m->triangles)
-        mesh_tris_.push_back({o.pose * m->vertices[t.x()], o.pose * m->vertices[t.y()],
-                              o.pose * m->vertices[t.z()]});
+        ms.tris.push_back({o.pose * m->vertices[t.x()], o.pose * m->vertices[t.y()],
+                           o.pose * m->vertices[t.z()]});
+      meshes_.push_back(std::move(ms));
       has_solids_ = true;
     }
   }
 }
 
-bool EnvContainment::inside(const Eigen::Vector3d &p) const {
+bool EnvContainment::inside(const Eigen::Vector3d &p, std::span<const std::uint8_t> skip) const {
+  const auto skipped = [&](int object) {
+    return static_cast<std::size_t>(object) < skip.size() && skip[static_cast<std::size_t>(object)];
+  };
   for (const BoxSolid &b : boxes_) {
+    if (skipped(b.object))
+      continue;
     const Eigen::Vector3d q = b.inv_pose * p;
     if (std::abs(q.x()) <= b.he.x() && std::abs(q.y()) <= b.he.y() && std::abs(q.z()) <= b.he.z())
       return true;
   }
   for (const SphereSolid &s : spheres_)
-    if ((p - s.c).norm() <= s.r)
+    if (!skipped(s.object) && (p - s.c).norm() <= s.r)
       return true;
   for (const CylSolid &c : cyls_) {
+    if (skipped(c.object))
+      continue;
     const Eigen::Vector3d q = c.inv_pose * p;
     if (std::hypot(q.x(), q.y()) <= c.r && std::abs(q.z()) <= c.half_len)
       return true;
   }
-  if (!mesh_tris_.empty()) {
-    // Parity ray in a generic direction (avoid axis alignment with typical meshes).
+  for (const MeshSolid &m : meshes_) {
+    if (skipped(m.object))
+      continue;
+    // Parity ray in a generic direction (avoid axis alignment with typical meshes), counted per
+    // object: odd crossings of THIS mesh's surface => inside it.
     const Eigen::Vector3d d = Eigen::Vector3d(0.3, 0.6, 0.74).normalized();
     int hits = 0;
-    for (const auto &tri : mesh_tris_)
+    for (const auto &tri : m.tris)
       hits += ray_triangle(p, d, tri[0], tri[1], tri[2]) ? 1 : 0;
     if (hits % 2 == 1)
       return true;

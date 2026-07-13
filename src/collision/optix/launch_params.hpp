@@ -32,10 +32,19 @@ struct LaunchParams {
 
   unsigned *out; // [num_configs]; atomicOr(1) on any hit
 
-  // Broadphase cull mask [num_configs * num_links], row-major (config, link): 1 => this link's world
-  // AABB does not overlap the environment for this config, so skip its rays entirely (they cannot
-  // hit). Null => no culling. A conservative cull that never changes the boolean result.
+  // Broadphase cull mask [num_configs * num_links], row-major (config, link): 1 => this link's
+  // world AABB does not overlap the environment for this config, so skip its rays entirely (they
+  // cannot hit). Null => no culling. A conservative cull that never changes the boolean result.
   const unsigned char *link_cull;
+
+  // ACM-allowed robot-link × environment-object pairs (Task 3.3d P4). `tri_object` maps each
+  // environment GAS primitive to its object index (static, uploaded at build); `env_allowed` is a
+  // [num_links * num_objects] mask, row-major (link slot, object): 1 => hits of this pair are
+  // ignored (anyhit calls optixIgnoreIntersection). Null env_allowed => no filtering, and raygen
+  // traces with anyhit DISABLED (the pre-P4 fast path).
+  const unsigned *tri_object;
+  const unsigned char *env_allowed;
+  unsigned num_objects;
 };
 
 } // namespace quevedomp::collision::optix_backend

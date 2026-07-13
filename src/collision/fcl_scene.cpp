@@ -24,9 +24,11 @@
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -145,6 +147,47 @@ struct SelfData {
   bool collision = false;
 };
 
+// ACM-allowed robot-link × environment-object pairs (Task 3.3d P4), resolved ONCE per query_batch
+// from the ACM's string pairs to integer keys the hot path can hash. Empty ⇒ every query takes the
+// unfiltered fast paths, exactly as before P4.
+struct EnvAcm {
+  std::unordered_set<std::uint64_t> keys;         // (link_index << 32) | handle
+  std::vector<std::pair<int, SceneHandle>> pairs; // same pairs, for containment-mask building
+  bool any() const noexcept { return !keys.empty(); }
+  static std::uint64_t key(int link_index, SceneHandle handle) {
+    return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(link_index)) << 32) | handle;
+  }
+};
+
+// Robot-vs-environment broad-phase callback that skips ACM-allowed pairs. Robot objects carry a
+// link index (>= 0) as user data; env objects carry -(handle) - 1 (see add_object).
+struct EnvAcmData {
+  const EnvAcm *acm = nullptr;
+  bool collision = false;
+};
+
+bool env_acm_callback(FclObject *o1, FclObject *o2, void *cdata) {
+  auto *d = static_cast<EnvAcmData *>(cdata);
+  if (d->collision)
+    return true;
+  const auto u1 = reinterpret_cast<std::intptr_t>(o1->getUserData());
+  const auto u2 = reinterpret_cast<std::intptr_t>(o2->getUserData());
+  const std::intptr_t env_u = u1 < 0 ? u1 : u2;
+  const std::intptr_t link_u = u1 < 0 ? u2 : u1;
+  const auto handle = static_cast<SceneHandle>(-env_u - 1);
+  if (d->acm->keys.count(EnvAcm::key(static_cast<int>(link_u), handle)) != 0)
+    return false; // allowed contact — not a collision
+  fcl::CollisionRequest<S> req;
+  req.num_max_contacts = 1;
+  fcl::CollisionResult<S> res;
+  fcl::collide(o1, o2, req, res);
+  if (res.isCollision()) {
+    d->collision = true;
+    return true;
+  }
+  return false;
+}
+
 bool self_callback(FclObject *o1, FclObject *o2, void *cdata) {
   auto *d = static_cast<SelfData *>(cdata);
   if (d->collision)
@@ -231,6 +274,9 @@ public:
   SceneHandle add_object(std::string id, const Geometry &geom, const Transform &pose) override {
     const SceneHandle handle = next_handle_++;
     auto obj = std::make_unique<FclObject>(make_env_geom(geom), to_fcl(pose));
+    // Env objects carry their handle encoded NEGATIVE (robot objects carry a link index >= 0), so
+    // a broad-phase callback can tell the two apart and look up ACM-allowed pairs (P4).
+    obj->setUserData(reinterpret_cast<void *>(-static_cast<std::intptr_t>(handle) - 1));
     obj->computeAABB();
     env_manager_.registerObject(obj.get());
     env_recipe_.emplace(handle, SceneObject{id, geom, pose}); // for ADR-012 containment
@@ -277,9 +323,39 @@ private:
     CollisionPair witness;
   };
 
-  bool boolean_query(const RobotInstance &robot, FclWorkspace &fws, const QueryOptions &opts) const;
-  DistEval distance_query(const RobotInstance &robot, FclWorkspace &fws,
-                          const QueryOptions &opts) const;
+  bool boolean_query(const RobotInstance &robot, FclWorkspace &fws, const QueryOptions &opts,
+                     const EnvAcm &acm_env) const;
+  DistEval distance_query(const RobotInstance &robot, FclWorkspace &fws, const QueryOptions &opts,
+                          const EnvAcm &acm_env) const;
+
+  // Resolve the ACM's robot-link × env-object string pairs to integer keys (P4). One pass over
+  // acm.pairs() per query_batch; pairs naming no link or no env id (self pairs, stale ids) are
+  // simply not env pairs.
+  EnvAcm compute_env_acm(const RobotInstance &robot) const {
+    EnvAcm out;
+    if (robot.acm().size() == 0 || env_objects_.empty())
+      return out;
+    std::unordered_map<std::string, std::vector<SceneHandle>> by_id; // ids may repeat
+    for (const auto &[handle, eo] : env_objects_)
+      by_id[eo.id].push_back(handle);
+    const auto &links = model_->links();
+    const auto add = [&](const std::string &link, const std::string &id) {
+      const Link *l = model_->find_link(link);
+      const auto it = by_id.find(id);
+      if (l == nullptr || it == by_id.end())
+        return;
+      const int li = static_cast<int>(l - links.data());
+      for (const SceneHandle h : it->second) {
+        if (out.keys.insert(EnvAcm::key(li, h)).second)
+          out.pairs.emplace_back(li, h);
+      }
+    };
+    for (const auto &[a, b] : robot.acm().pairs()) {
+      add(a, b);
+      add(b, a);
+    }
+    return out;
+  }
 
   // A loaded robot mesh: its FCL geometry + its geometry-frame centroid (the ADR-012 interior pt).
   struct MeshEntry {
@@ -304,13 +380,17 @@ private:
     return e;
   }
 
-  // Rebuild the containment tester from the current environment if it changed.
+  // Rebuild the containment tester from the current environment if it changed. Also records each
+  // handle's position in the build order — the object index EnvContainment skip masks use (P4).
   void ensure_containment() const {
     if (!containment_dirty_)
       return;
     SceneDescription env;
-    for (const auto &[handle, o] : env_recipe_)
+    containment_index_by_handle_.clear();
+    for (const auto &[handle, o] : env_recipe_) {
+      containment_index_by_handle_[handle] = static_cast<int>(env.objects.size());
       env.objects.push_back(o);
+    }
     containment_ = EnvContainment(env);
     containment_dirty_ = false;
   }
@@ -325,6 +405,7 @@ private:
   std::unordered_map<SceneHandle, SceneObject> env_recipe_; // for containment rebuilds
   mutable FclManager env_manager_; // broad-phase queries are logically const
   mutable EnvContainment containment_;
+  mutable std::unordered_map<SceneHandle, int> containment_index_by_handle_;
   mutable bool containment_dirty_ = true;
   SceneHandle next_handle_ = 0;
 };
@@ -369,12 +450,19 @@ std::unique_ptr<Workspace> FclScene::make_workspace() const {
 // honoring the ACM. Returns true on first overlap. Used when neither distance nor a safety margin
 // is requested.
 bool FclScene::boolean_query(const RobotInstance &robot, FclWorkspace &fws,
-                             const QueryOptions &opts) const {
+                             const QueryOptions &opts, const EnvAcm &acm_env) const {
   if (!env_objects_.empty()) {
-    fcl::DefaultCollisionData<S> data;
-    fws.manager_.collide(&env_manager_, &data, fcl::DefaultCollisionFunction<S>);
-    if (data.result.isCollision())
-      return true;
+    if (acm_env.any()) { // P4: skip ACM-allowed link × object pairs
+      EnvAcmData data{&acm_env, false};
+      fws.manager_.collide(&env_manager_, &data, env_acm_callback);
+      if (data.collision)
+        return true;
+    } else {
+      fcl::DefaultCollisionData<S> data;
+      fws.manager_.collide(&env_manager_, &data, fcl::DefaultCollisionFunction<S>);
+      if (data.result.isCollision())
+        return true;
+    }
   }
   if (opts.check_self_collision) {
     SelfData sd{&robot.model(), &robot.acm(), false};
@@ -390,7 +478,7 @@ bool FclScene::boolean_query(const RobotInstance &robot, FclWorkspace &fws,
 // robot-env pair, twice for a robot-robot pair). FCL is authoritative here; it is slower than the
 // boolean broad-phase, which is why it runs only when distance or a safety margin is requested.
 FclScene::DistEval FclScene::distance_query(const RobotInstance &robot, FclWorkspace &fws,
-                                            const QueryOptions &opts) const {
+                                            const QueryOptions &opts, const EnvAcm &acm_env) const {
   const RobotModel &model = robot.model();
   const double pad = opts.robot_padding;
 
@@ -400,6 +488,10 @@ FclScene::DistEval FclScene::distance_query(const RobotInstance &robot, FclWorks
   for (std::size_t s = 0; s < link_shapes_.size(); ++s) {
     const std::string &la = model.links()[link_shapes_[s].link_index].name;
     for (const auto &[handle, eo] : env_objects_) {
+      // P4: allowed pairs are excluded outright — from the boolean AND from min-distance/witness,
+      // exactly as ACM-allowed self pairs are below.
+      if (acm_env.any() && acm_env.keys.count(EnvAcm::key(link_shapes_[s].link_index, handle)) != 0)
+        continue;
       const PairDist pd = narrow_distance(fws.objects_[s].get(), eo.obj.get());
       const double sd = pd.signed_distance - pad;
       if (sd < best.signed_distance)
@@ -448,6 +540,22 @@ BatchResult FclScene::query_batch(const RobotInstance &robot, std::span<const Jo
   if (do_containment)
     ensure_containment(); // mutable rebuild happens BEFORE any parallel region
 
+  // P4: resolve ACM robot-link × env-object pairs once per batch (read-only in the parallel
+  // region). `contain_skip` carries the same exclusions into the containment tests: a link
+  // allowed to touch an object must not report "inside it" either.
+  const EnvAcm acm_env = compute_env_acm(robot);
+  std::unordered_map<int, std::vector<std::uint8_t>> contain_skip; // link index -> object mask
+  if (acm_env.any() && do_containment) {
+    for (const auto &[li, handle] : acm_env.pairs) {
+      const auto it = containment_index_by_handle_.find(handle);
+      if (it == containment_index_by_handle_.end())
+        continue;
+      auto &mask = contain_skip[li];
+      mask.resize(env_recipe_.size(), 0);
+      mask[static_cast<std::size_t>(it->second)] = 1;
+    }
+  }
+
   // One config, evaluated in workspace `w`. Writes only out[i] — disjoint across configs, so
   // results are identical whether configs run serially or fanned across threads.
   const auto process = [&](std::size_t i, FclWorkspace &w) {
@@ -461,9 +569,9 @@ BatchResult FclScene::query_batch(const RobotInstance &robot, std::span<const Jo
 
     bool hit;
     if (!need_distance) {
-      hit = boolean_query(robot, w, opts);
+      hit = boolean_query(robot, w, opts, acm_env);
     } else {
-      const DistEval e = distance_query(robot, w, opts);
+      const DistEval e = distance_query(robot, w, opts, acm_env);
       hit = e.signed_distance < opts.safety_margin;
       if (want_distance) {
         const double clamped = e.signed_distance > opts.max_distance
@@ -475,11 +583,17 @@ BatchResult FclScene::query_batch(const RobotInstance &robot, std::span<const Jo
     }
 
     if (!hit && do_containment && containment_.any()) {
-      for (const auto &[li, p] : link_interior_)
-        if (containment_.inside(link_poses[li] * p)) {
+      for (const auto &[li, p] : link_interior_) {
+        std::span<const std::uint8_t> skip;
+        if (!contain_skip.empty()) {
+          if (const auto it = contain_skip.find(li); it != contain_skip.end())
+            skip = it->second;
+        }
+        if (containment_.inside(link_poses[li] * p, skip)) {
           hit = true;
           break;
         }
+      }
     }
     out.in_collision[i] = hit ? 1 : 0;
   };

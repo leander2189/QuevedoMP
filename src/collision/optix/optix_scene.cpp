@@ -25,9 +25,11 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -171,6 +173,7 @@ public:
   std::unique_ptr<Workspace> fcl_ws_;
   cudaStream_t stream = nullptr; // all this workspace's GPU work is ordered on one explicit stream
   DeviceBuffer d_xform, d_out, d_params, d_cull; // persistent, grown geometrically across calls
+  DeviceBuffer d_env_allowed;                    // P4 ACM anyhit mask (slot × object)
   PinnedBuffer h_xform, h_hits, h_cull;          // pinned staging for H2D transforms / cull / D2H
 };
 
@@ -227,6 +230,39 @@ public:
 
     const bool do_gpu = num_rays_ > 0 && gas_ != 0 && n > 0;
     const bool do_contain = containment_.any() && !link_interior_.empty() && n > 0;
+
+    // ---- P4: ACM robot-link × env-object pairs, resolved once per batch. `env_allowed` is the
+    // GPU anyhit mask (slot × object); `contain_skip` carries the same exclusions into the CPU
+    // containment tests (keyed by model link index, since interior points are not slot-bound).
+    std::vector<std::uint8_t> env_allowed; // empty => no filtering (anyhit disabled)
+    std::unordered_map<int, std::vector<std::uint8_t>> contain_skip;
+    if (robot.acm().size() != 0 && !env_ids_.empty() && (do_gpu || do_contain)) {
+      std::unordered_map<std::string, std::vector<unsigned>> by_id; // ids may repeat
+      for (unsigned oi = 0; oi < env_ids_.size(); ++oi)
+        by_id[env_ids_[oi]].push_back(oi);
+      const auto &links = model_->links();
+      const std::size_t slots = ray_link_slots_.size();
+      const auto add = [&](const std::string &link, const std::string &id) {
+        const Link *l = model_->find_link(link);
+        const auto it = by_id.find(id);
+        if (l == nullptr || it == by_id.end())
+          return;
+        const int li = static_cast<int>(l - links.data());
+        for (const unsigned oi : it->second) {
+          if (const auto s = slot_by_link_.find(li); s != slot_by_link_.end()) {
+            env_allowed.resize(slots * env_ids_.size(), 0);
+            env_allowed[static_cast<std::size_t>(s->second) * env_ids_.size() + oi] = 1;
+          }
+          auto &mask = contain_skip[li];
+          mask.resize(env_ids_.size(), 0);
+          mask[oi] = 1;
+        }
+      };
+      for (const auto &[a, b] : robot.acm().pairs()) {
+        add(a, b);
+        add(b, a);
+      }
+    }
 
     // Broadphase robot-link cull (ADR-014 prototype). OPT-IN via QUEVEDOMP_OPTIX_CULL: it wins only
     // when a localized obstacle lets many links cull; on a workspace-spanning obstacle its host +
@@ -333,6 +369,15 @@ public:
       p.ray_link = d_ray_link_.as<int>();
       p.num_rays = num_rays_;
       p.num_links = static_cast<unsigned>(slots);
+      p.tri_object = d_env_tri_object_.as<unsigned>();
+      p.num_objects = static_cast<unsigned>(env_ids_.size());
+      p.env_allowed = nullptr;
+      if (!env_allowed.empty()) {
+        // Synchronous upload (tiny; slots × objects bytes) — complete before the chunk launches
+        // below are enqueued on the workspace stream.
+        ows.d_env_allowed.upload(env_allowed.data(), env_allowed.size());
+        p.env_allowed = ows.d_env_allowed.as<unsigned char>();
+      }
 
       // OptiX caps one launch at 2^30 total threads (width × height × depth); one thread per
       // (ray, config) means a fat batch (P3 sweep edges: 10k+ configs × ~400k robot rays) blows
@@ -391,7 +436,13 @@ public:
         if (result[c])
           continue;
         for (std::size_t k = 0; k < n_int; ++k) {
-          if (containment_.inside(interior_world[c * n_int + k])) {
+          std::span<const std::uint8_t> skip;
+          if (!contain_skip.empty()) {
+            if (const auto it = contain_skip.find(link_interior_[k].first);
+                it != contain_skip.end())
+              skip = it->second;
+          }
+          if (containment_.inside(interior_world[c * n_int + k], skip)) {
             result[c] = 1;
             break;
           }
@@ -450,6 +501,8 @@ private:
     hg.kind = OPTIX_PROGRAM_GROUP_KIND_HITGROUP;
     hg.hitgroup.moduleCH = module_;
     hg.hitgroup.entryFunctionNameCH = "__closesthit__ch";
+    hg.hitgroup.moduleAH = module_; // P4 ACM filter; raygen disables anyhit when unused
+    hg.hitgroup.entryFunctionNameAH = "__anyhit__ah";
     log_size = sizeof(log);
     optix_check(optixProgramGroupCreate(ctx_, &hg, 1, &pgo, log, &log_size, &hit_pg_), "hg pg");
 
@@ -480,7 +533,10 @@ private:
   void build_environment_gas(const SceneDescription &env) {
     std::vector<float3> verts;
     std::vector<uint3> tris;
+    std::vector<unsigned> tri_object; // per GAS primitive: its object index (P4 ACM filtering)
     for (const SceneObject &o : env.objects) {
+      const auto oi = static_cast<unsigned>(env_ids_.size());
+      env_ids_.push_back(o.id);
       if (const auto *b = std::get_if<BoxShape>(&o.geometry))
         append_box(verts, tris, b->half_extents, o.pose);
       else if (const auto *m = std::get_if<Mesh>(&o.geometry))
@@ -489,9 +545,11 @@ private:
         append_mesh(verts, tris, tessellate_sphere(s->radius), o.pose);
       else if (const auto *c = std::get_if<CylinderShape>(&o.geometry))
         append_mesh(verts, tris, tessellate_cylinder(c->radius, c->length), o.pose);
+      tri_object.resize(tris.size(), oi); // the triangles this object just appended
     }
     if (tris.empty())
       return; // empty environment: gas_ stays 0, robot-vs-env skipped
+    d_env_tri_object_.upload(tri_object.data(), tri_object.size() * sizeof(unsigned));
 
     // World-space AABB of the whole environment — the broadphase-cull test target (per config, a
     // robot link whose world AABB misses this box casts no ray that can hit).
@@ -620,6 +678,7 @@ private:
         (void)slot;
       }
       if (len.size() > before) {
+        slot_by_link_[li] = static_cast<int>(ray_link_slots_.size()); // reverse map (P4 mask)
         ray_link_slots_.push_back(li); // this link contributed rays -> it gets a transform slot
         slot_lo_.push_back(lo.cast<float>());
         slot_hi_.push_back(hi.cast<float>());
@@ -646,11 +705,13 @@ private:
   DeviceBuffer d_rg_, d_ms_, d_hg_;
 
   OptixTraversableHandle gas_ = 0;
-  DeviceBuffer d_gas_, d_env_verts_, d_env_tris_;
+  DeviceBuffer d_gas_, d_env_verts_, d_env_tris_, d_env_tri_object_;
+  std::vector<std::string> env_ids_; // object index (GAS append order) -> caller id (P4)
 
   DeviceBuffer d_ray_origin_, d_ray_dir_, d_ray_len_, d_ray_link_;
   unsigned num_rays_ = 0;
-  std::vector<int> ray_link_slots_; // slot -> model link index
+  std::vector<int> ray_link_slots_;           // slot -> model link index
+  std::unordered_map<int, int> slot_by_link_; // model link index -> slot
 
   // Broadphase cull: per-slot link-local ray AABB + the environment world AABB (ADR-014 robot-link
   // cull — skip a link's rays when its posed AABB misses the environment).

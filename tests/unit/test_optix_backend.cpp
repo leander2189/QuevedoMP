@@ -130,9 +130,10 @@ TEST(OptixBackend, AgreesWithFclOnSurfaceCrossing) {
 }
 
 // Persistent/grown workspace buffers (ADR-014): one workspace reused across several query_batch
-// calls with DIFFERENT batch sizes (grow then shrink) must keep agreeing with FCL config-for-config.
-// This exercises the geometric-growth device/pinned buffers and the explicit-stream launch path —
-// stale capacity, a wrong memset/copy length, or leftover results would surface here.
+// calls with DIFFERENT batch sizes (grow then shrink) must keep agreeing with FCL
+// config-for-config. This exercises the geometric-growth device/pinned buffers and the
+// explicit-stream launch path — stale capacity, a wrong memset/copy length, or leftover results
+// would surface here.
 TEST(OptixBackend, ReusedWorkspaceVaryingBatchSizesAgreeWithFcl) {
   const auto model = RobotModel::from_urdf(read_text(fixtures() + "/robots/ur5.urdf"));
   const RobotInstance robot(model);
@@ -140,8 +141,8 @@ TEST(OptixBackend, ReusedWorkspaceVaryingBatchSizesAgreeWithFcl) {
 
   const Eigen::Vector3d wrist = fk(*model, JointPosition::Zero(dof), "wrist_3_link").translation();
   SceneDescription env;
-  env.objects.push_back({"wall", BoxShape{Eigen::Vector3d(0.25, 0.25, 0.02)},
-                         Transform::from_translation(wrist)});
+  env.objects.push_back(
+      {"wall", BoxShape{Eigen::Vector3d(0.25, 0.25, 0.02)}, Transform::from_translation(wrist)});
 
   const auto fcl = make_static_scene(model, env, BackendHint::ForceCpuFcl, ur5_meshes());
   const auto optix = make_static_scene(model, env, BackendHint::ForceOptix, ur5_meshes());
@@ -189,8 +190,8 @@ TEST(HybridAuto, AgreesWithFclAcrossTheThreshold) {
 
   const Eigen::Vector3d wrist = fk(*model, JointPosition::Zero(dof), "wrist_3_link").translation();
   SceneDescription env;
-  env.objects.push_back({"wall", BoxShape{Eigen::Vector3d(0.25, 0.25, 0.02)},
-                         Transform::from_translation(wrist)});
+  env.objects.push_back(
+      {"wall", BoxShape{Eigen::Vector3d(0.25, 0.25, 0.02)}, Transform::from_translation(wrist)});
 
   const auto fcl = make_static_scene(model, env, BackendHint::ForceCpuFcl, ur5_meshes());
   const auto hybrid = make_static_scene(model, env, BackendHint::Auto, ur5_meshes());
@@ -299,6 +300,75 @@ TEST(HybridAuto, DistanceQueriesRouteToFcl) {
   ASSERT_NO_THROW(r = scene->query_batch(robot, qs, opts, *ws));
   ASSERT_EQ(r.min_distance.size(), qs.size());
   EXPECT_GT(r.min_distance[0], 0.0f); // separated: wall is 0.5 m above the wrist
+}
+
+// Task 3.3d P4: ACM robot-link × env-object pairs must filter GPU hits (anyhit) exactly as FCL
+// does — full config-for-config agreement WITH allowed pairs in play, and the filter must
+// actually flip some verdicts (else the test is trivial).
+TEST(OptixBackend, AcmEnvPairAgreesWithFcl) {
+  const auto model = RobotModel::from_urdf(read_text(fixtures() + "/robots/ur5.urdf"));
+  RobotInstance robot(model);
+  const int dof = static_cast<int>(model->dof());
+
+  const Eigen::Vector3d wrist = fk(*model, JointPosition::Zero(dof), "wrist_3_link").translation();
+  SceneDescription env;
+  env.objects.push_back(
+      {"wall", BoxShape{Eigen::Vector3d(0.25, 0.25, 0.02)}, Transform::from_translation(wrist)});
+
+  const auto fcl = make_static_scene(model, env, BackendHint::ForceCpuFcl, ur5_meshes());
+  const auto optix = make_static_scene(model, env, BackendHint::ForceOptix, ur5_meshes());
+  const auto fcl_ws = fcl->make_workspace();
+  const auto optix_ws = optix->make_workspace();
+
+  QueryOptions opts;
+  opts.check_self_collision = false;
+
+  std::vector<JointPosition> qs;
+  for (int k = 0; k <= 16; ++k) {
+    JointPosition q = JointPosition::Zero(dof);
+    q[0] = -0.8 + 1.6 * k / 16.0;
+    qs.push_back(q);
+  }
+
+  const BatchResult f0 = fcl->query_batch(robot, qs, opts, *fcl_ws);
+  int collisions_before = 0;
+  for (const auto c : f0.in_collision)
+    collisions_before += c;
+  ASSERT_GT(collisions_before, 0) << "obstacle never engaged — test is trivial";
+
+  // Allow the wrist cluster against the wall; the swept contacts come from these links.
+  for (const char *link : {"wrist_1_link", "wrist_2_link", "wrist_3_link", "ee_link"})
+    robot.acm().allow(link, "wall");
+
+  const BatchResult f = fcl->query_batch(robot, qs, opts, *fcl_ws);
+  const BatchResult o = optix->query_batch(robot, qs, opts, *optix_ws);
+  int collisions_after = 0;
+  for (std::size_t i = 0; i < qs.size(); ++i) {
+    EXPECT_EQ(o.in_collision[i], f.in_collision[i]) << "config " << i << " (q0=" << qs[i][0] << ")";
+    collisions_after += f.in_collision[i];
+  }
+  EXPECT_LT(collisions_after, collisions_before) << "ACM env pairs changed nothing — trivial";
+}
+
+// P4 + ADR-012: the containment check honors the same env pairs (via EnvContainment skip masks).
+TEST(OptixBackend, AcmEnvPairSkipsContainment) {
+  const auto model = RobotModel::from_urdf(read_text(fixtures() + "/robots/ur5.urdf"));
+  RobotInstance robot(model);
+  const JointPosition home = JointPosition::Zero(static_cast<int>(model->dof()));
+  QueryOptions opts;
+  opts.check_self_collision = false;
+
+  SceneDescription cage;
+  cage.objects.push_back({"cage", box_mesh(2.0), Transform::Identity()});
+  const auto scene = make_static_scene(model, cage, BackendHint::ForceOptix, ur5_meshes());
+  const auto ws = scene->make_workspace();
+
+  EXPECT_TRUE(scene->query(robot, home, opts, *ws).in_collision);
+  for (const Link &l : model->links())
+    robot.acm().allow(l.name, "cage");
+  EXPECT_FALSE(scene->query(robot, home, opts, *ws).in_collision);
+  robot.acm().disallow("wrist_3_link", "cage");
+  EXPECT_TRUE(scene->query(robot, home, opts, *ws).in_collision);
 }
 
 // ADR-012 containment: a robot fully inside a watertight mesh casts no surface ray that hits, so

@@ -28,8 +28,7 @@ extern "C" __global__ void __raygen__rg() {
   // Broadphase cull: if this ray's link is far from the environment for this config, no ray of it
   // can hit — skip before touching the transform or tracing (see LaunchParams::link_cull).
   const int link = params.ray_link[r];
-  if (params.link_cull &&
-      params.link_cull[static_cast<std::size_t>(c) * params.num_links + link])
+  if (params.link_cull && params.link_cull[static_cast<std::size_t>(c) * params.num_links + link])
     return;
 
   const float3 o = make_float3(params.ray_origin[3 * r], params.ray_origin[3 * r + 1],
@@ -39,8 +38,7 @@ extern "C" __global__ void __raygen__rg() {
 
   // Apply this config's transform for the ray's link (row-major 3x4). Rotation to the direction,
   // full affine to the origin. A rigid transform preserves length, so tmax stays ray_len.
-  const float *T =
-      params.xform + (static_cast<std::size_t>(c) * params.num_links + link) * 12;
+  const float *T = params.xform + (static_cast<std::size_t>(c) * params.num_links + link) * 12;
   const float3 op = make_float3(T[0] * o.x + T[1] * o.y + T[2] * o.z + T[3],
                                 T[4] * o.x + T[5] * o.y + T[6] * o.z + T[7],
                                 T[8] * o.x + T[9] * o.y + T[10] * o.z + T[11]);
@@ -48,11 +46,26 @@ extern "C" __global__ void __raygen__rg() {
       make_float3(T[0] * d.x + T[1] * d.y + T[2] * d.z, T[4] * d.x + T[5] * d.y + T[6] * d.z,
                   T[8] * d.x + T[9] * d.y + T[10] * d.z);
 
+  // With no ACM env filtering the anyhit stage is disabled outright (the pre-P4 fast path — the
+  // hardware can skip the shader stage entirely).
+  const unsigned int flags = OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT |
+                             (params.env_allowed ? 0u : OPTIX_RAY_FLAG_DISABLE_ANYHIT);
   unsigned int hit = 0;
-  optixTrace(params.handle, op, dp, 1e-4f, params.ray_len[r], 0.0f, OptixVisibilityMask(255),
-             OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT, 0, 1, 0, hit);
+  optixTrace(params.handle, op, dp, 1e-4f, params.ray_len[r], 0.0f, OptixVisibilityMask(255), flags,
+             0, 1, 0, hit);
   if (hit)
     atomicOr(&params.out[c], 1u);
+}
+
+// P4: ignore intersections of ACM-allowed (link, environment-object) pairs. Only reached when
+// env_allowed is non-null (raygen disables anyhit otherwise); idempotent, so repeated invocations
+// per primitive are harmless.
+extern "C" __global__ void __anyhit__ah() {
+  const unsigned r = optixGetLaunchIndex().x;
+  const int link = params.ray_link[r];
+  const unsigned obj = params.tri_object[optixGetPrimitiveIndex()];
+  if (params.env_allowed[static_cast<std::size_t>(link) * params.num_objects + obj])
+    optixIgnoreIntersection();
 }
 
 extern "C" __global__ void __miss__ms() { optixSetPayload_0(0); }

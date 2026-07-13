@@ -143,11 +143,12 @@ def main() -> None:
     params.edge_resolution = args.edge
     planner = q.make_planner(params, robot, scene)
 
-    # Preferred goal: a collision-free IK branch near the fastener. Under the strict collision
-    # model no such branch exists (the dress kits graze the work object in every reachable
-    # branch, and the ACM is not honored for robot-vs-environment pairs — core gap, see the
-    # profiling notes), so fall back to a big workspace sweep past the duct: the same
-    # collision-heavy regime, with a goal that is actually feasible.
+    # Preferred goal: a collision-free IK branch near the fastener. The dresskit allowance above
+    # IS honored since Task 3.3d P4, but the pre-insertion pose remains infeasible for a physical
+    # reason the dresskit witnesses used to mask: every reachable branch puts the rigid wrist
+    # assembly 0.3–1.5 cm inside the work object (deeper retracts are out of IK reach). Until the
+    # pose/mesh calibration is revisited, fall back to a big workspace sweep past the duct: the
+    # same collision-heavy regime, with a goal that is actually feasible.
     target = q.Transform.from_parts(FASTENER_T, FASTENER_Q) * q.Transform.from_translation(
         np.array([0.0, 0.0, args.goal_offset])
     )
