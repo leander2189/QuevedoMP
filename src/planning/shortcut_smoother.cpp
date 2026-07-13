@@ -1,26 +1,36 @@
-// planning/ShortcutSmoother — iterative shortcut path smoothing (Task 3.3, spec §6 Phase 3).
+// planning/ShortcutSmoother — batched iterative shortcut path smoothing (Task 3.3, spec §6
+// Phase 3; batched + time-budgeted in Task 3.3d P6).
 //
-// Each iteration picks two path indices i < j (with at least one node between them), validates the
-// direct chord path[i]→path[j] as ONE batch via collision::check_edge, and if it is free deletes
-// the intervening nodes — replacing a sub-polyline with its chord. That is collision-safe (the
-// chord was checked) and length-safe (a chord is ≤ the polyline it replaces by the triangle
-// inequality), so the output is collision-free and never longer than the input. Endpoints are
-// never removed (i ≥ 0, j ≤ n-1). A single Rng(seed) drives the index choice ⇒ deterministic.
+// Each ROUND samples up to `batch_size` candidate chords path[i]→path[j] whose interiors are
+// DISJOINT (they may share endpoints), validates them all as ONE CollisionScene::query_batch —
+// the planner's fat-batch trick applied to smoothing, so the parallel-CPU/GPU backends engage —
+// and deletes the interior nodes of every free chord (right-to-left, so earlier erasures cannot
+// shift later ones). Each replacement is collision-safe (the chord was checked) and length-safe
+// (a chord is ≤ the polyline it replaces by the triangle inequality), so the output is
+// collision-free and never longer than the input, exactly as in the serial smoother. Endpoints
+// are never removed (i ≥ 0, j ≤ n-1). A single Rng(seed) drives all chord choices ⇒
+// deterministic; batch_size = 1 reproduces the pre-P6 smoother draw-for-draw.
 //
-// Follow-up (not needed yet): batched shortcut (validate k non-overlapping candidate chords per
-// batch) and continuous/partial shortcut (endpoints interpolated along segments, not just at
-// nodes) — both fatten the batches and shorten harder. v0 keeps it one chord per iteration.
+// `time_budget` (checked before each round) makes smoothing anytime: the pipeline can spend
+// exactly its polish budget and stop with a valid, partially-shortened path.
 #include "quevedomp/planning/smoother.hpp"
 
+#include <algorithm>
+#include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
-#include "quevedomp/collision/edge_check.hpp"
+#include "quevedomp/collision/collision_scene.hpp"
+#include "quevedomp/collision/edge_discretization.hpp"
 #include "quevedomp/core/rng.hpp"
 
 namespace quevedomp::planning {
 namespace {
+
+using Clock = std::chrono::steady_clock;
 
 class ShortcutSmoother final : public Smoother {
 public:
@@ -36,26 +46,81 @@ public:
       return path;
     }
 
+    const auto t_begin = Clock::now();
     Path p = path;
     Rng rng(params_.seed);
     const auto ws = scene_->make_workspace();
+    const std::size_t batch = std::max<std::size_t>(1, params_.batch_size);
 
-    for (std::size_t iter = 0; iter < params_.max_iterations; ++iter) {
-      const std::size_t n = p.size();
-      if (n <= 2) {
+    std::size_t attempts = 0; // chords validated; max_iterations bounds this in both modes
+    while (attempts < params_.max_iterations && p.size() > 2) {
+      if (params_.time_budget > 0.0 &&
+          std::chrono::duration<double>(Clock::now() - t_begin).count() >= params_.time_budget) {
         break;
       }
-      // i ∈ [0, n-3], j ∈ [i+2, n-1] — guarantees ≥ 1 interior node between i and j.
-      const auto i = static_cast<std::size_t>(rng.uniform(0.0, static_cast<double>(n - 2)));
-      const auto j =
-          static_cast<std::size_t>(rng.uniform(static_cast<double>(i + 2), static_cast<double>(n)));
+      const std::size_t n = p.size();
 
-      const auto edge =
-          collision::check_edge(*scene_, *robot_, p[i], p[j], disc_, params_.collision, *ws);
-      if (edge.valid) {
-        // Drop the interior nodes (i, j) become adjacent, joined by the validated chord.
-        p.erase(p.begin() + static_cast<std::ptrdiff_t>(i + 1),
-                p.begin() + static_cast<std::ptrdiff_t>(j));
+      // Sample candidate chords with pairwise-disjoint interiors. i ∈ [0, n-3], j ∈ [i+2, n-1]
+      // guarantees ≥ 1 interior node. Overlapping draws are discarded (bounded redraws, not
+      // counted as attempts); batch_size = 1 never redraws, matching the pre-P6 Rng sequence.
+      std::vector<std::pair<std::size_t, std::size_t>> chords;
+      for (std::size_t draw = 0;
+           draw < 4 * batch && chords.size() < batch &&
+           attempts + chords.size() < params_.max_iterations && chords.size() + 2 < n;
+           ++draw) {
+        const auto i = static_cast<std::size_t>(rng.uniform(0.0, static_cast<double>(n - 2)));
+        const auto j = static_cast<std::size_t>(
+            rng.uniform(static_cast<double>(i + 2), static_cast<double>(n)));
+        const bool overlaps = std::any_of(
+            chords.begin(), chords.end(), [&](const std::pair<std::size_t, std::size_t> &c) {
+              return i < c.second && c.first < j; // open intervals intersect
+            });
+        if (!overlaps) {
+          chords.emplace_back(i, j);
+        }
+      }
+      if (chords.empty()) {
+        break; // path too short for another disjoint chord this round (n == 3 handled above)
+      }
+      attempts += chords.size();
+
+      // ONE batch for the whole round: every chord discretized (P3 policy) and concatenated.
+      std::vector<JointPosition> samples;
+      std::vector<std::pair<std::size_t, int>> slices; // (offset, steps) per chord
+      slices.reserve(chords.size());
+      for (const auto &[i, j] : chords) {
+        const JointPosition delta = p[j] - p[i];
+        const int steps = disc_.steps(delta);
+        slices.emplace_back(samples.size(), steps);
+        for (int k = 0; k <= steps; ++k) {
+          samples.push_back(p[i] + (static_cast<double>(k) / steps) * delta);
+        }
+      }
+      const collision::BatchResult br =
+          scene_->query_batch(*robot_, samples, params_.collision, *ws);
+
+      // Accept every free chord, highest i first: disjoint interiors mean earlier (right-side)
+      // erasures never move a later (left-side) chord's nodes.
+      std::vector<std::size_t> order(chords.size());
+      for (std::size_t k = 0; k < order.size(); ++k) {
+        order[k] = k;
+      }
+      std::sort(order.begin(), order.end(),
+                [&](std::size_t a, std::size_t b) { return chords[a].first > chords[b].first; });
+      for (const std::size_t c : order) {
+        const auto [off, steps] = slices[c];
+        bool free = true;
+        for (int k = 0; k <= steps; ++k) {
+          if (br.in_collision[off + static_cast<std::size_t>(k)] != 0) {
+            free = false;
+            break;
+          }
+        }
+        if (free) {
+          const auto [i, j] = chords[c];
+          p.erase(p.begin() + static_cast<std::ptrdiff_t>(i + 1),
+                  p.begin() + static_cast<std::ptrdiff_t>(j));
+        }
       }
     }
     return p;

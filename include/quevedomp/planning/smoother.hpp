@@ -31,9 +31,20 @@ struct SmootherParams {
   double max_link_sweep = 0.0;
   JointPosition lever_weights;
 
-  // Number of shortcut attempts. The real polish budget is time-based in the pipeline (Task 3.5);
-  // this bounds work in isolation.
+  // Total shortcut attempts (candidate chords drawn). This bounds work when no time budget is
+  // set; the pipeline's real polish budget is `time_budget` (Task 3.3d P6).
   std::size_t max_iterations = 200;
+
+  // Candidate chords validated per collision round (Task 3.3d P6). Chords in one round have
+  // DISJOINT interiors, so every free one is accepted together — the whole round is ONE
+  // query_batch, fat enough for the parallel-CPU/GPU backends (the planner's batch trick applied
+  // to smoothing). 1 = the classic one-chord-per-round smoother.
+  std::size_t batch_size = 8;
+
+  // Wall-clock budget (seconds) checked before each round; 0 = unlimited (max_iterations rules).
+  // Smoothing is anytime: stopping early just polishes less — output stays collision-free and
+  // never longer than the input.
+  double time_budget = 0.0;
 
   // RNG seed for choosing shortcut endpoints — same seed ⇒ same smoothed path (determinism).
   std::uint64_t seed = 0;

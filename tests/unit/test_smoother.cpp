@@ -141,6 +141,51 @@ TEST(ShortcutSmoother, PreservesCollisionFreeAroundWall) {
   expect_collision_free(f, out, 0.05); // still free — the shortcut across the wall must be rejected
 }
 
+// ---- Task 3.3d P6: batched rounds + time budget ----------------------------------------------
+
+TEST(ShortcutSmoother, SingleChordModeStillShortens) {
+  auto f = make_fixture(false);
+  SmootherParams p = params(42);
+  p.batch_size = 1; // the pre-P6 smoother, draw-for-draw
+  const auto sm = make_shortcut_smoother(p, f.robot, f.scene);
+  const Path in = {q2(-1, -1), q2(-1, 1), q2(1, 1), q2(1, -1)};
+  const Path out = sm->smooth(in);
+  EXPECT_LT(path_length(out), path_length(in));
+  expect_collision_free(f, out, 0.05);
+}
+
+TEST(ShortcutSmoother, BatchedRoundAcceptsMultipleDisjointChords) {
+  auto f = make_fixture(false);
+  SmootherParams p = params(11);
+  p.batch_size = 8;
+  p.max_iterations = 8; // ONE round's worth of attempts — shortening must come from that round
+  const auto sm = make_shortcut_smoother(p, f.robot, f.scene);
+  // A long zig-zag in free space: plenty of disjoint shortcut opportunities in a single round.
+  Path in;
+  for (int k = 0; k <= 10; ++k) {
+    in.push_back(q2(-1.0 + 0.2 * k, (k % 2 == 0) ? -1.0 : 1.0));
+  }
+  const Path out = sm->smooth(in);
+  EXPECT_LT(out.size(), in.size()); // at least one chord accepted within the single round
+  EXPECT_LT(path_length(out), path_length(in));
+  EXPECT_LT((out.front() - in.front()).norm(), 1e-12);
+  EXPECT_LT((out.back() - in.back()).norm(), 1e-12);
+  expect_collision_free(f, out, 0.05);
+}
+
+TEST(ShortcutSmoother, TinyTimeBudgetReturnsInputUnchanged) {
+  auto f = make_fixture(false);
+  SmootherParams p = params(3);
+  p.time_budget = 1e-12; // trips before the first round: anytime contract, zero polish
+  const auto sm = make_shortcut_smoother(p, f.robot, f.scene);
+  const Path in = {q2(-1, -1), q2(-1, 1), q2(1, 1), q2(1, -1)};
+  const Path out = sm->smooth(in);
+  ASSERT_EQ(out.size(), in.size());
+  for (std::size_t i = 0; i < in.size(); ++i) {
+    EXPECT_LT((out[i] - in[i]).norm(), 1e-12);
+  }
+}
+
 TEST(ShortcutSmoother, DeterministicPerSeed) {
   auto f = make_fixture(false);
   const auto sm = make_shortcut_smoother(params(999), f.robot, f.scene);

@@ -159,6 +159,11 @@ void bind_planning(nb::module_ &m) {
               "Match the planner's max_link_sweep so shortcuts validate at the same fidelity.")
       .def_rw("lever_weights", &SmootherParams::lever_weights)
       .def_rw("max_iterations", &SmootherParams::max_iterations)
+      .def_rw("batch_size", &SmootherParams::batch_size,
+              "Disjoint candidate chords validated per collision round (ONE query_batch); "
+              "1 = the classic serial shortcut.")
+      .def_rw("time_budget", &SmootherParams::time_budget,
+              "Wall-clock polish budget in seconds, checked per round; 0 = unlimited.")
       .def_rw("seed", &SmootherParams::seed)
       .def_rw("collision", &SmootherParams::collision);
 
