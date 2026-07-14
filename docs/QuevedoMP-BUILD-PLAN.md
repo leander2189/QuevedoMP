@@ -867,12 +867,30 @@ surfaced these follow-ups, roughly in value order:
 | P5 | **Goal sampling budget** (deferred 2026-07-13 at Leandro's call): PoseGoal sampling gives up after ~3–5 IK branches ("all goal configurations are in collision"); cluttered cells need dozens + interleaved resampling during search. The building block landed the same day: `InverseKinematics::solve_all` (distinct-branch collection, deterministic, seed-nearest ordering, `IkOptions.branch_tol`; custom costs = caller-side sort) + studio branch picker (`session.solve_ik_branches`, collision-annotated). Wiring `resolve_goal` to it is the remaining P5 work. | Same sweep: feasible-looking poses rejected instantly with 3–5 sampled configs. |
 | P6 | ✅ **Batched + time-budgeted smoothing** (2026-07-13). The smoother was the last thin-batch consumer: one chord per round meant 200 serial round trips. Now each round samples up to `SmootherParams::batch_size` (default 8) candidate chords with DISJOINT interiors, validates them as ONE query_batch (P3 discretization policy applies), and accepts every free one right-to-left — same collision/length guarantees, deterministic per seed, `batch_size = 1` reproduces the pre-P6 smoother draw-for-draw. `time_budget` (s, checked per round) makes smoothing anytime for the Task 3.5 pipeline. Task 3.3b (SDF clearance smoothing) remains the structural fix. | `benchmark.qmps` seed 8 (raw 10 wp / 7.23 rad): serial 516 ms vs batched 355 ms at IDENTICAL output (7 wp / 7.213 rad); `time_budget = 0.1 s` → 100 ms, STILL identical output — the 200-attempt tail was pure diminishing returns, so the budget is nearly free on this cell. Batched rounds are guaranteed past the Auto GPU threshold (>256 configs), which is where the ≥1M-tri Phase B fixtures will collect the larger win. |
 
-### Task 3.4 — `ToppRaParameterization`
-- Time-optimal under joint + TCP vel/acc.
-- Note: no apt package — this triggers the deferred vcpkg/FetchContent decision (deviation
-  D2's escape hatch). Candidates: `hungpham2511/toppra` (C++ port) via FetchContent, or
-  implement the core algorithm (well-documented). Raise as a §12 decision when reached.
-- **Verify:** velocity **and** acceleration respected at every waypoint (jerk **not** guaranteed — ADR-011).
+### Task 3.4 — Time parameterization (TOPP + tip limits + jerk; ADR-017, supersedes ADR-011's jerk clause)
+Scope adopted 2026-07-14 from Leandro's spec (docs/topp_jerk_tip_spec.md) after pro/con review;
+ratified decisions in ADR-017: (a) OSQP-hybrid solver strategy, (b) tip acceleration IN scope
+(per-axis form), (c) the C³ path stage lives inside this task, (d) ADR-011 revised.
+
+- ✅ **Stage 0 (2026-07-14):** `parameterization/PathSpline` — C⁴ degree-5 B-spline over planner
+  waypoints (jerk is meaningless on a polyline; spec §7.2) + `fit_collision_free()` re-validating
+  the curve at P3 edge fidelity (ONE query_batch per round, densify-and-refit toward the validated
+  polyline on collision, loud failure). Eigen-unsupported spline wart documented: Dynamic-dimension
+  `Spline::operator()` asserts — one fixed-degree 1-D spline per joint instead (identical math).
+- ✅ **Stage 1 (2026-07-14):** `parametrize()` Phase A — the convex problem (joint vel/acc + tip
+  vel/acc) solved exactly by a dependency-free TOPP-RA-style recursion (2-var vertex-enumeration
+  LPs backward, greedy maximal profile forward). `limits_from_model()` maps URDF + yaml jerk
+  extension + TaskLimits; `JointState` gained `acc`; Python bindings.
+  **Verify (done):** analytic 1-DOF trapezoid/triangle durations to <1%; joint AND tip limits
+  hold at every node on UR5 splines; tip-speed cap saturates over the stroke (near-constant tool
+  speed — the paint-pass behavior); rest-to-rest, monotone time, deterministic;
+  **differential vs pip toppra** (same dense path, vel+acc): durations within 2% (test-only dep,
+  auto-skipped when toppra is absent).
+- ⏳ **Stage 2:** jerk via SCP over OSQP (FetchContent, first non-apt C++ dep — the §12/D2
+  escape hatch, recorded in ADR-017): PSD Taylor-model QP subproblems + trust region, warm-started
+  from Phase A; infeasibility reported with the max-violation node (spec §7.5). Verify: |q⃛| ≤
+  j_max in the smooth interior, runtime measured against the polished budget, IPOPT fallback
+  documented.
 
 ### Task 3.5 — Full-pipeline integration + **the goal benchmark**
 - **Verify:** MotionBenchMaker static subset **plus the B.1 high-poly fixture set**; rerun

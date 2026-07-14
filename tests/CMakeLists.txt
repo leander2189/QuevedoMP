@@ -120,6 +120,12 @@ add_executable(test_planner unit/test_planner.cpp)
 target_link_libraries(test_planner PRIVATE quevedomp::quevedomp GTest::gtest_main)
 gtest_discover_tests(test_planner)
 
+add_executable(test_parameterization unit/test_parameterization.cpp)
+target_link_libraries(test_parameterization PRIVATE quevedomp::quevedomp GTest::gtest_main)
+target_compile_definitions(test_parameterization
+  PRIVATE QUEVEDOMP_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
+gtest_discover_tests(test_parameterization)
+
 add_executable(test_smoother unit/test_smoother.cpp)
 target_link_libraries(test_smoother PRIVATE quevedomp::quevedomp GTest::gtest_main)
 gtest_discover_tests(test_smoother)

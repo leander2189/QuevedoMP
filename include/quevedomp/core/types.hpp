@@ -17,6 +17,9 @@ using JointVelocity = Eigen::VectorXd;
 struct JointState {
   JointPosition pos;
   JointVelocity vel;
+  // Joint acceleration (rad/s² / m/s²); filled by trajectory parameterization (Task 3.4).
+  // Empty ⇒ not computed (older producers).
+  JointVelocity acc;
 };
 
 // SE(3) rigid-body transform — a thin, explicit wrapper over Eigen::Isometry3d so the rest

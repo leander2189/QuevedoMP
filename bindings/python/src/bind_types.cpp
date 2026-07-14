@@ -132,7 +132,9 @@ void bind_types(nb::module_ &m) {
   nb::class_<JointState>(m, "JointState")
       .def(nb::init<>())
       .def_rw("pos", &JointState::pos)
-      .def_rw("vel", &JointState::vel);
+      .def_rw("vel", &JointState::vel)
+      .def_rw("acc", &JointState::acc,
+              "Joint acceleration; empty unless produced by trajectory parameterization.");
 
   nb::class_<Waypoint>(m, "Waypoint", "One timed trajectory sample (seconds from start).")
       .def(nb::init<>())

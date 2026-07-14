@@ -789,6 +789,8 @@ Every significant decision → `docs/architecture/adr-NNN.md` (Context · Decisi
 - ADR-009 — Collision semantic contract + boundary-band differential testing.
 - ADR-010 — FCL-first/OptiX-second sequencing and the boolean-authoritative distinction.
 - ADR-011 — TOPP-RA only for v0; jerk not bounded; consequences accepted.
+  **(Superseded 2026-07-14 by ADR-017:** TOPP with tip vel/acc limits + optional jerk phase;
+  jerk bounded in Scp mode on C³ paths; ConvexOnly keeps ADR-011's contract.)
 
 **API docs:** Doxygen (C++) + Sphinx/Breathe + `.pyi` stubs; tutorials for quick start, custom
 robot, planning constraints, performance tuning.

@@ -78,6 +78,8 @@ add_library(quevedomp
   src/planning/planner.cpp
   src/planning/rrt_connect.cpp
   src/planning/shortcut_smoother.cpp
+  src/parameterization/path_spline.cpp
+  src/parameterization/parameterize.cpp
   src/capture/serialize.cpp
   src/viz/visualizer.cpp
 )
