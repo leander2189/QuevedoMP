@@ -90,6 +90,26 @@ def test_fit_collision_free_avoids_wall() -> None:
     assert not br.in_collision.any()
 
 
+def test_jerk_limited_mode_certifies(ur5: q.RobotModel) -> None:
+    sp = q.PathSpline.fit(WAYPOINTS)
+    lim = q.limits_from_model(ur5, default_acceleration=8.0)
+    lim.max_jerk = np.full(6, 40.0)
+    opt = q.ParameterizationOptions()
+    opt.nodes = 300
+    opt.mode = q.ParameterizationMode.JerkLimited
+    r = q.parametrize(ur5, sp, lim, opt)
+    assert r.success, r.message
+    assert r.max_jerk_violation <= opt.jerk_tolerance
+
+    copt = q.ParameterizationOptions()
+    copt.nodes = 300
+    convex = q.parametrize(ur5, sp, lim, copt)
+    assert r.duration >= convex.duration - 1e-9  # jerk can only slow it down
+    for w in r.trajectory:  # Phase A limits still hold after the kernel
+        assert np.all(np.abs(w.state.vel) <= lim.max_velocity * 1.03)
+        assert np.all(np.abs(w.state.acc) <= lim.max_acceleration * 1.03)
+
+
 def test_phase_a_matches_toppra(ur5: q.RobotModel) -> None:
     """Differential vs toppra (vel+acc only): same dense geometric path, durations within 2%."""
     toppra = pytest.importorskip("toppra")

@@ -86,14 +86,16 @@ void bind_parameterization(nb::module_ &m) {
 
   nb::enum_<ParameterizationOptions::Mode>(m, "ParameterizationMode")
       .value("ConvexOnly", ParameterizationOptions::Mode::ConvexOnly)
-      .value("Scp", ParameterizationOptions::Mode::Scp);
+      .value("JerkLimited", ParameterizationOptions::Mode::JerkLimited);
 
   nb::class_<ParameterizationOptions>(m, "ParameterizationOptions")
       .def(nb::init<>())
       .def_rw("nodes", &ParameterizationOptions::nodes)
       .def_rw("eps", &ParameterizationOptions::eps)
-      .def_rw("max_scp_iterations", &ParameterizationOptions::max_scp_iterations)
-      .def_rw("scp_tolerance", &ParameterizationOptions::scp_tolerance)
+      .def_rw("max_jerk_passes", &ParameterizationOptions::max_jerk_passes,
+              "JerkLimited: velocity-reduction kernel pass budget.")
+      .def_rw("jerk_tolerance", &ParameterizationOptions::jerk_tolerance,
+              "JerkLimited: accepted relative violation (certified max |jerk|/j_max - 1).")
       .def_rw("mode", &ParameterizationOptions::mode);
 
   nb::class_<ParameterizationResult>(m, "ParameterizationResult")
@@ -104,7 +106,7 @@ void bind_parameterization(nb::module_ &m) {
       .def_ro("duration", &ParameterizationResult::duration)
       .def_ro("s", &ParameterizationResult::s)
       .def_ro("beta", &ParameterizationResult::beta)
-      .def_ro("scp_iterations", &ParameterizationResult::scp_iterations)
+      .def_ro("jerk_passes", &ParameterizationResult::jerk_passes)
       .def_ro("max_jerk_violation", &ParameterizationResult::max_jerk_violation)
       .def("__repr__", [](const ParameterizationResult &r) {
         return nb::str("ParameterizationResult(success={}, duration={:.4f}s, nodes={})")

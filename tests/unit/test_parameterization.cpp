@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <iostream>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -240,6 +241,125 @@ TEST(ParametrizePhaseA, TipSpeedCapSaturatesAndSlowsTrajectory) {
       ++saturated;
   }
   EXPECT_GT(saturated, static_cast<int>(slow.result.trajectory.size() / 4));
+}
+
+// ---- Stage 2: jerk via the velocity-reduction kernel ----------------------------------------
+
+namespace {
+
+// Interior-node jerk of a returned profile, evaluated from the diagnostics (the same discrete
+// identity the kernel certifies): q⃛ = √β·(q'·u' + 3·q''·u + q'''·β), u = Δβ/(2Δ).
+double measured_jerk_ratio(const ParameterizationResult &r, const PathSpline &path,
+                           const JointPosition &j_max) {
+  const int N = static_cast<int>(r.beta.size()) - 1;
+  const double delta = 1.0 / N;
+  double worst = 0.0;
+  for (int k = 1; k < N; ++k) {
+    const double s = r.s[static_cast<std::size_t>(k)];
+    const double u_k = (r.beta[k + 1] - r.beta[k]) / (2 * delta);
+    const double u_km1 = (r.beta[k] - r.beta[k - 1]) / (2 * delta);
+    const double du = (u_k - u_km1) / delta;
+    const double sq = std::sqrt(std::max(r.beta[k], 0.0));
+    const JointPosition d1 = path.d1(s), d2 = path.d2(s), d3 = path.d3(s);
+    for (Eigen::Index i = 0; i < j_max.size(); ++i) {
+      if (j_max[i] <= 0.0)
+        continue;
+      const double h = sq * (d1[i] * du + 3.0 * d2[i] * u_k + d3[i] * r.beta[k]);
+      worst = std::max(worst, std::abs(h) / j_max[i]);
+    }
+  }
+  return worst;
+}
+
+} // namespace
+
+// The 1-DOF S-curve testbed: rest-to-rest over d with (v, a, j) and v >= a²/j has the analytic
+// optimum T* = d/v + v/a + a/j. The kernel is suboptimal BY DESIGN (it slows the Phase A shape,
+// it does not reshape it) — the certified-jerk contract is the gate; the gap vs T* is RECORDED.
+// Bounds: never faster than Phase A; never slower than the pure uniform-α³ scaling (the kernel's
+// own terminal fallback — local dips must beat or match it).
+TEST(ParametrizeJerk, SCurveCertifiedAndRecordedGap) {
+  const auto model = RobotModel::from_urdf(kSlider);
+  const PathSpline line = unit_line();
+
+  Limits lim;
+  lim.max_velocity = q1(0.6);
+  lim.max_acceleration = q1(1.0);
+  lim.max_jerk = q1(2.0);
+  ParameterizationOptions opt;
+  opt.nodes = 300;
+  opt.mode = ParameterizationOptions::Mode::JerkLimited;
+
+  ParameterizationOptions copt = opt;
+  copt.mode = ParameterizationOptions::Mode::ConvexOnly;
+  const auto convex = parametrize(*model, line, lim, copt);
+  ASSERT_TRUE(convex.success);
+
+  const auto r = parametrize(*model, line, lim, opt);
+  ASSERT_TRUE(r.success) << r.message;
+  EXPECT_GT(r.jerk_passes, 0);
+  EXPECT_LE(r.max_jerk_violation, opt.jerk_tolerance);
+  EXPECT_LE(measured_jerk_ratio(r, line, lim.max_jerk), 1.0 + opt.jerk_tolerance + 1e-9);
+  EXPECT_GE(r.duration, convex.duration - 1e-6);
+
+  // Uniform-scaling ceiling: Phase A worst ratio → T_uniform = T_convex / α, α = ratio^{-1/3}.
+  const double phase_a_ratio = measured_jerk_ratio(convex, line, lim.max_jerk);
+  ASSERT_GT(phase_a_ratio, 1.0); // the testbed must actually violate jerk
+  const double t_uniform = convex.duration * std::pow(phase_a_ratio / 0.95, 1.0 / 3.0);
+  EXPECT_LE(r.duration, t_uniform * 1.05);
+
+  const double t_star = 1.0 / 0.6 + 0.6 + 1.0 / 2.0;
+  std::cout << "[ jerk-kernel ] S-curve: T=" << r.duration << " s vs analytic optimum " << t_star
+            << " s (gap " << (r.duration / t_star - 1.0) * 100.0 << "%), Phase A "
+            << convex.duration << " s (ratio " << phase_a_ratio << "), uniform ceiling "
+            << t_uniform << " s, passes " << r.jerk_passes << "\n";
+}
+
+TEST(ParametrizeJerk, RespectsAllLimitsOnUr5AndIsDeterministic) {
+  auto base = ur5_case(/*vtip=*/0.5, /*atip=*/4.0);
+  ParameterizationOptions opt;
+  opt.nodes = 300;
+  opt.mode = ParameterizationOptions::Mode::JerkLimited;
+  Limits lim = base.lim;
+  lim.max_jerk = JointPosition::Constant(6, 40.0);
+
+  const auto a = parametrize(*base.model, base.spline, lim, opt);
+  ASSERT_TRUE(a.success) << a.message;
+  EXPECT_LE(a.max_jerk_violation, opt.jerk_tolerance);
+  EXPECT_LE(measured_jerk_ratio(a, base.spline, lim.max_jerk), 1.0 + opt.jerk_tolerance + 1e-9);
+  EXPECT_GE(a.duration, base.result.duration - 1e-6);
+
+  const double tol = 1.03;
+  for (const auto &w : a.trajectory) {
+    for (Eigen::Index i = 0; i < 6; ++i) {
+      EXPECT_LE(std::abs(w.state.vel[i]), lim.max_velocity[i] * tol);
+      EXPECT_LE(std::abs(w.state.acc[i]), lim.max_acceleration[i] * tol);
+    }
+    const Eigen::MatrixXd J = jacobian(*base.model, w.state.pos, "wrist_3_link");
+    EXPECT_LE((J * w.state.vel).head<3>().norm(), lim.tip_linear_velocity * tol);
+  }
+  std::cout << "[ jerk-kernel ] UR5: T=" << a.duration << " s vs Phase A " << base.result.duration
+            << " s (penalty " << (a.duration / base.result.duration - 1.0) * 100.0 << "%), passes "
+            << a.jerk_passes << "\n";
+
+  const auto b = parametrize(*base.model, base.spline, lim, opt);
+  ASSERT_EQ(a.beta.size(), b.beta.size());
+  for (std::size_t k = 0; k < a.beta.size(); ++k)
+    EXPECT_DOUBLE_EQ(a.beta[k], b.beta[k]); // deterministic
+}
+
+TEST(ParametrizeJerk, JerkModeWithoutJerkLimitsFallsBackToConvex) {
+  const auto model = RobotModel::from_urdf(kSlider);
+  const PathSpline line = unit_line();
+  Limits lim;
+  lim.max_velocity = q1(0.6);
+  lim.max_acceleration = q1(1.0); // max_jerk left empty
+  ParameterizationOptions opt;
+  opt.mode = ParameterizationOptions::Mode::JerkLimited;
+  const auto r = parametrize(*model, line, lim, opt);
+  ASSERT_TRUE(r.success);
+  EXPECT_EQ(r.jerk_passes, 0);
+  EXPECT_NEAR(r.duration, 0.6 + 1.0 / 0.6, 0.01); // the Phase A trapezoid
 }
 
 TEST(ParametrizePhaseA, InfeasibleAndInvalidInputsFailLoudly) {

@@ -211,11 +211,15 @@ repeat:
 until  ‖Δ(β,u)‖ < tol  and  max jerk violation < tol
 ```
 
-**Ratified implementation (ADR-017): the subproblem objective is the second-order
-Taylor model of OBJ at the iterate (convex ⇒ PSD tridiagonal Hessian), making every
-subproblem a QP solved by OSQP** (Apache-2, C, FetchContent — the D2 escape hatch,
-recorded as a §12 decision). A monolithic warm-started IPOPT solve is the documented
-fallback if SCP stalls.
+**Ratified implementation (ADR-017 as amended 2026-07-15): Phase B is a VELOCITY-REDUCTION
+KERNEL, not SCP.** The SCP-over-OSQP route was prototyped and reverted (post-mortem in
+ADR-017: the 1/√β barrier and √β jerk curvature both blow up at the rest boundaries where
+the profile must operate; stabilizing that stack was endless). Instead: the α³ scaling law
+(β → α²β scales node jerk by exactly α³) is applied locally — smooth envelope dips where the
+exactly-evaluated jerk exceeds its limit, widened until the acceleration rows tolerate the
+ramps, with the uniform scaling as the certified terminal fallback. Always terminates
+certified, deterministic, microseconds; suboptimal (slows the Phase A shape, does not
+reshape). SCP/IPOPT remain the documented path if optimality is ever needed.
 
 ---
 
@@ -279,6 +283,8 @@ Build order (executed):
    1-DOF trapezoid/triangle profiles.
 3. ✅ **V-TIP + per-axis tip acceleration** in the MVC/rows; tip speed saturation
    verified (near-constant tool speed on the capped stretch).
-4. ⏳ Jerk rows via **SCP over OSQP** (Stage 2); validate `max |q⃛| ≤ j_max` in the
-   smooth interior and that runtime stays within the polished budget.
+4. ✅ Jerk via the **velocity-reduction kernel** (Stage 2, 2026-07-15; ADR-017 amendment):
+   `max |q⃛|/j_max − 1 ≤ jerk_tolerance` certified at the interior nodes, all Phase A limits
+   re-verified, microsecond runtime. Measured: UR5 +4.7% duration; pathological 1-DOF
+   S-curve 7.0 s vs 2.77 s reshaping optimum vs 10.3 s uniform ceiling.
 ```

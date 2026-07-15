@@ -85,6 +85,162 @@ struct NodeRows {
   }
 };
 
+// ---- Stage 2: jerk via the velocity-reduction kernel (ADR-017 as amended) ------------------
+//
+// Discrete node jerk: q⃛_i(s_k) = √β_k·(q'_i·u'_k + 3·q''_i·u_k + q'''_i·β_k), with u derived
+// from β by the exact C1 recursion and u' by finite difference. Every term is homogeneous under
+// a UNIFORM scaling β → α²β (√β·α, u·α², u'·α²), so node jerk scales by EXACTLY α³ — the
+// certified terminal fallback. The kernel exploits the same law LOCALLY: dip β by a smooth
+// envelope where the exactly-evaluated jerk exceeds its limit, then re-evaluate exactly (no
+// linearization anywhere). Envelope ramps inject their own u/u', so a candidate is accepted only
+// if the acceleration-type rows still hold; otherwise the ramps are widened — at the width limit
+// the envelope degenerates to the uniform scaling, which shrinks every constraint. Deterministic,
+// O(N·dof) per pass.
+struct KernelInput {
+  int N = 0;
+  double delta = 0.0;
+  const std::vector<NodeRows> *nodes = nullptr; // acc-type rows (symmetric) + MVC per node
+  const std::vector<JointPosition> *d1 = nullptr, *d2 = nullptr, *d3 = nullptr;
+  JointPosition j_max; // per joint; entries <= 0 are unconstrained
+};
+
+// Per-node jerk ratio max_i |q⃛_i|/j_i (1 = at the limit) + the profile-wide worst.
+struct JerkRatios {
+  std::vector<double> node; // size N+1; endpoints 0 (no u' there)
+  double worst = 0.0;
+};
+
+JerkRatios jerk_ratios(const std::vector<double> &beta, const KernelInput &in) {
+  const double inv2d = 1.0 / (2.0 * in.delta);
+  JerkRatios out;
+  out.node.assign(beta.size(), 0.0);
+  for (int k = 1; k < in.N; ++k) {
+    const auto ki = static_cast<std::size_t>(k);
+    const double u_k = (beta[ki + 1] - beta[ki]) * inv2d;
+    const double u_km1 = (beta[ki] - beta[ki - 1]) * inv2d;
+    const double du = (u_k - u_km1) / in.delta;
+    const double sq = std::sqrt(std::max(beta[ki], 0.0));
+    double ratio = 0.0;
+    for (Eigen::Index i = 0; i < in.j_max.size(); ++i) {
+      if (in.j_max[i] <= 0.0) {
+        continue;
+      }
+      const double h =
+          sq * ((*in.d1)[ki][i] * du + 3.0 * (*in.d2)[ki][i] * u_k + (*in.d3)[ki][i] * beta[ki]);
+      ratio = std::max(ratio, std::abs(h) / in.j_max[i]);
+    }
+    out.node[ki] = ratio;
+    out.worst = std::max(out.worst, ratio);
+  }
+  return out;
+}
+
+// Worst acceleration-type row ratio |a·u + b·β| / bound over both interval endpoints (the exact
+// Phase A constraint set; all rows are symmetric, hi > 0).
+double acc_ratio(const std::vector<double> &beta, const KernelInput &in) {
+  const double inv2d = 1.0 / (2.0 * in.delta);
+  double worst = 0.0;
+  for (int k = 0; k < in.N; ++k) {
+    const auto ki = static_cast<std::size_t>(k);
+    const double u = (beta[ki + 1] - beta[ki]) * inv2d;
+    const NodeRows &nk = (*in.nodes)[ki];
+    for (std::size_t r = 0; r < nk.a.size(); ++r) {
+      worst = std::max(worst, std::abs(nk.a[r] * u + nk.b[r] * beta[ki]) / nk.hi[r]);
+    }
+    const NodeRows &nk1 = (*in.nodes)[ki + 1];
+    for (std::size_t r = 0; r < nk1.a.size(); ++r) {
+      worst = std::max(worst, std::abs(nk1.a[r] * u + nk1.b[r] * beta[ki + 1]) / nk1.hi[r]);
+    }
+  }
+  return worst;
+}
+
+struct KernelOutcome {
+  int passes = 0;
+  double max_violation = 0.0; // worst ratio − 1 at the returned profile (≤ tolerance ⇒ certified)
+  bool converged = false;
+};
+
+KernelOutcome jerk_limit_kernel(std::vector<double> &beta, const KernelInput &in,
+                                const ParameterizationOptions &opt) {
+  KernelOutcome out;
+  const int N = in.N;
+  const auto n_nodes = beta.size();
+  constexpr double kTarget = 0.95; // dip aims 5% under the limit — headroom for ramp coupling
+  int W = std::max(2, N / 50);     // ramp half-width (nodes); widens on acc-row violations
+
+  JerkRatios jr = jerk_ratios(beta, in);
+  while (out.passes < opt.max_jerk_passes && jr.worst > 1.0 + opt.jerk_tolerance) {
+    ++out.passes;
+
+    // Raw per-node cap from the α³ law, then a min-filter (width 2W+1) to widen each dip and a
+    // box smooth (half-width W/2, support ≤ the plateau) so ramps are gentle but plateau centers
+    // keep their target value.
+    // Per-pass depth clamp: a 90×-violating node wants cap ≈ 0.05 at once, whose ramps are far
+    // too steep for zero-headroom acceleration segments — reach deep dips over several passes
+    // with gentle ramps instead (0.25 ⇒ ≤ 4× slowdown per pass, compounding across passes).
+    constexpr double kMaxDipPerPass = 0.25;
+    std::vector<double> cap(n_nodes, 1.0);
+    for (std::size_t k = 0; k < n_nodes; ++k) {
+      if (jr.node[k] > kTarget) {
+        cap[k] = std::max(std::pow(kTarget / jr.node[k], 2.0 / 3.0), kMaxDipPerPass);
+      }
+    }
+    std::vector<double> env(n_nodes, 1.0);
+    for (std::size_t k = 0; k < n_nodes; ++k) {
+      const std::size_t lo = k >= static_cast<std::size_t>(W) ? k - static_cast<std::size_t>(W) : 0;
+      const std::size_t hi = std::min(n_nodes - 1, k + static_cast<std::size_t>(W));
+      double m = 1.0;
+      for (std::size_t j = lo; j <= hi; ++j) {
+        m = std::min(m, cap[j]);
+      }
+      env[k] = m;
+    }
+    const int h = std::max(1, W / 2);
+    for (int smooth_pass = 0; smooth_pass < 2; ++smooth_pass) {
+      std::vector<double> sm(n_nodes);
+      for (std::size_t k = 0; k < n_nodes; ++k) {
+        const std::size_t lo =
+            k >= static_cast<std::size_t>(h) ? k - static_cast<std::size_t>(h) : 0;
+        const std::size_t hi = std::min(n_nodes - 1, k + static_cast<std::size_t>(h));
+        double sum = 0.0;
+        for (std::size_t j = lo; j <= hi; ++j) {
+          sum += env[j];
+        }
+        sm[k] = sum / static_cast<double>(hi - lo + 1);
+      }
+      env = std::move(sm);
+    }
+
+    std::vector<double> candidate(n_nodes);
+    for (std::size_t k = 0; k < n_nodes; ++k) {
+      candidate[k] = beta[k] * env[k];
+    }
+    if (acc_ratio(candidate, in) > 1.0 + 1e-9) {
+      // The envelope's ramps stole acceleration headroom: widen and rebuild from the SAME β.
+      // At W ≥ N the envelope is constant (uniform scaling), which strictly shrinks every row.
+      W = std::min(2 * W, N);
+      continue;
+    }
+    beta = std::move(candidate);
+    jr = jerk_ratios(beta, in);
+  }
+
+  if (jr.worst > 1.0 + opt.jerk_tolerance) {
+    // Certified terminal fallback: uniform β·α² scales every node jerk by exactly α³ and
+    // shrinks all acceleration/velocity/tip rows. Lands at (1 + tolerance/2) of the limit.
+    const double alpha3 = (1.0 + 0.5 * opt.jerk_tolerance) / jr.worst;
+    const double a2 = std::pow(alpha3, 2.0 / 3.0);
+    for (double &b : beta) {
+      b *= a2;
+    }
+    jr = jerk_ratios(beta, in);
+  }
+  out.max_violation = std::max(jr.worst - 1.0, 0.0);
+  out.converged = jr.worst <= 1.0 + opt.jerk_tolerance;
+  return out;
+}
+
 } // namespace
 
 Limits limits_from_model(const RobotModel &model, const planning::TaskLimits &task,
@@ -295,6 +451,29 @@ ParameterizationResult parametrize(const RobotModel &model, const PathSpline &pa
     beta[ki + 1] = std::max(0.0, y_hi); // greedy: ride the maximal controllable profile
   }
 
+  // ---- Stage 2: jerk via the velocity-reduction kernel ---------------------------------------
+  const bool want_jerk = options.mode == ParameterizationOptions::Mode::JerkLimited &&
+                         limits.max_jerk.size() == dof && (limits.max_jerk.array() > 0.0).any();
+  bool jerk_ok = true;
+  if (want_jerk) {
+    std::vector<JointPosition> d3s(nodes.size());
+    for (int k = 0; k <= N; ++k) {
+      d3s[static_cast<std::size_t>(k)] = path.d3(static_cast<double>(k) / N);
+    }
+    KernelInput in;
+    in.N = N;
+    in.delta = delta;
+    in.nodes = &nodes;
+    in.d1 = &d1s;
+    in.d2 = &d2s;
+    in.d3 = &d3s;
+    in.j_max = limits.max_jerk;
+    const KernelOutcome kc = jerk_limit_kernel(beta, in, options);
+    out.jerk_passes = kc.passes;
+    out.max_jerk_violation = kc.max_violation;
+    jerk_ok = kc.converged; // the uniform fallback certifies; false only on numerical surprise
+  }
+
   // ---- Times + trajectory --------------------------------------------------------------------
   out.s.resize(nodes.size());
   out.beta = beta;
@@ -322,10 +501,17 @@ ParameterizationResult parametrize(const RobotModel &model, const PathSpline &pa
     w.state.acc = d1s[ki] * u + d2s[ki] * beta[ki];
   }
   out.duration = t;
-  out.success = true;
-  out.message = options.mode == ParameterizationOptions::Mode::Scp
-                    ? "convex phase solved (jerk phase is Stage 2 — not yet wired)"
-                    : "solved (convex phase)";
+  out.success = jerk_ok;
+  if (!jerk_ok) {
+    out.message = "jerk kernel did not certify: residual violation " +
+                  std::to_string(out.max_jerk_violation * 100.0) + "% (numerical — raise nodes)";
+  } else if (want_jerk) {
+    out.message = "solved (convex + jerk-kernel phases)";
+  } else if (options.mode == ParameterizationOptions::Mode::JerkLimited) {
+    out.message = "solved (convex phase; no jerk limits set)";
+  } else {
+    out.message = "solved (convex phase)";
+  }
   return out;
 }
 

@@ -886,11 +886,19 @@ ratified decisions in ADR-017: (a) OSQP-hybrid solver strategy, (b) tip accelera
   speed — the paint-pass behavior); rest-to-rest, monotone time, deterministic;
   **differential vs pip toppra** (same dense path, vel+acc): durations within 2% (test-only dep,
   auto-skipped when toppra is absent).
-- ⏳ **Stage 2:** jerk via SCP over OSQP (FetchContent, first non-apt C++ dep — the §12/D2
-  escape hatch, recorded in ADR-017): PSD Taylor-model QP subproblems + trust region, warm-started
-  from Phase A; infeasibility reported with the max-violation node (spec §7.5). Verify: |q⃛| ≤
-  j_max in the smooth interior, runtime measured against the polished budget, IPOPT fallback
-  documented.
+- ✅ **Stage 2 (2026-07-15, ADR-017 amended):** jerk via a **velocity-reduction kernel**, not
+  SCP. The OSQP/SCP route was prototyped end-to-end and reverted (post-mortem in ADR-017 — the
+  1/√β boundary structure defeats naive convexification; converged prototypes were 3–4× off
+  optimal at 10–100 ms). Leandro's replacement: exploit the exact α³ law (β → α²β scales node
+  jerk by exactly α³) locally — smooth envelope dips where the exactly-evaluated jerk ratio
+  exceeds 1 (per-pass depth clamp, min-filter + box-smoothed ramps), accepted only if the Phase A
+  acceleration rows still hold (else widen; the width limit IS the uniform scaling), uniform α³
+  fallback certifies unconditionally. Always-certified, deterministic, dependency-free (D2
+  pristine — no OSQP), microseconds. **Verify (done):** certified `|q⃛|/j_max − 1 ≤ 1%` at all
+  interior nodes + all Phase A limits re-held on UR5 (+4.7% duration, 1 pass) + recorded
+  suboptimality on the pathological S-curve (7.0 s vs 2.77 s optimum vs 10.3 s uniform ceiling
+  at a 90× Phase A violation — the no-reshaping price, accepted); deterministic; whole
+  parameterization stays in the fast budget.
 
 ### Task 3.5 — Full-pipeline integration + **the goal benchmark**
 - **Verify:** MotionBenchMaker static subset **plus the B.1 high-poly fixture set**; rerun
