@@ -301,6 +301,15 @@ public:
       goal_tree.add(g, -1);
     }
 
+    // R2 debug export: one copy of the final trees at exit — never touched in the growth loop.
+    const auto snapshot_trees = [&] {
+      if (!params_.record_tree) {
+        return;
+      }
+      result.trees = {TreeSnapshot{start_tree.q, start_tree.parent},
+                      TreeSnapshot{goal_tree.q, goal_tree.parent}};
+    };
+
     auto check = [&](std::span<const EdgeReq> edges) {
       return batch_check(edges, *scene_, *robot_, opts, *ws, disc_, result.stats, t_collision);
     };
@@ -316,6 +325,7 @@ public:
       for (std::size_t i = 0; i < ts.size(); ++i) {
         if (ts[i] >= 1.0f) {
           result.path = {problem.start, goals[i]};
+          snapshot_trees();
           return finish(PlanningStatus::Success, "solved by direct connection");
         }
       }
@@ -381,6 +391,7 @@ public:
           const auto [a_idx, o_idx] = pair_idx[m];
           result.path = active_is_start ? build_path(start_tree, a_idx, goal_tree, o_idx)
                                         : build_path(start_tree, o_idx, goal_tree, a_idx);
+          snapshot_trees();
           return finish(PlanningStatus::Success, "solved");
         }
       }
@@ -388,6 +399,7 @@ public:
     }
 
     const bool timed_out = std::chrono::duration<double>(Clock::now() - t_begin).count() >= timeout;
+    snapshot_trees();
     return finish(timed_out ? PlanningStatus::Timeout : PlanningStatus::NoSolution,
                   timed_out ? "planning timed out" : "iteration budget exhausted");
   }

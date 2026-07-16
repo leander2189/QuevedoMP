@@ -52,6 +52,10 @@ struct PlannerParams {
 
   // Defensive cap on growth iterations; the real budget is PlanningProblem::timeout.
   std::size_t max_iterations = 100000;
+
+  // Debug/visualization (roadmap R2): copy the final search trees into PlanningResult::trees
+  // when planning ends. One copy at exit — zero cost in the growth loop; off by default.
+  bool record_tree = false;
 };
 
 // The planning interface (spec §6). `plan` is const + reentrant: it owns no mutable state between

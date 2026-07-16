@@ -101,12 +101,20 @@ void bind_planning(nb::module_ &m) {
       .def_ro("time_first_solution", &PlanningStats::time_first_solution)
       .def_ro("time_total", &PlanningStats::time_total);
 
+  nb::class_<TreeSnapshot>(m, "TreeSnapshot",
+                           "One search tree, snapshotted at plan exit (record_tree). Parents "
+                           "precede children; parent -1 marks a root.")
+      .def_ro("nodes", &TreeSnapshot::nodes)
+      .def_ro("parents", &TreeSnapshot::parents);
+
   nb::class_<PlanningResult>(m, "PlanningResult")
       .def_ro("status", &PlanningResult::status)
       .def_ro("path", &PlanningResult::path, "Joint-space waypoints as a list of (dof,) arrays.")
       .def_ro("stats", &PlanningResult::stats)
       .def_ro("used_seed", &PlanningResult::used_seed)
       .def_ro("message", &PlanningResult::message)
+      .def_ro("trees", &PlanningResult::trees,
+              "[start, goal] TreeSnapshots when PlannerParams.record_tree was set, else empty.")
       .def("ok", &PlanningResult::ok)
       .def(
           "path_array",
@@ -140,7 +148,10 @@ void bind_planning(nb::module_ &m) {
       .def_rw("max_extension", &PlannerParams::max_extension)
       .def_rw("goal_bias", &PlannerParams::goal_bias)
       .def_rw("batch_size", &PlannerParams::batch_size)
-      .def_rw("max_iterations", &PlannerParams::max_iterations);
+      .def_rw("max_iterations", &PlannerParams::max_iterations)
+      .def_rw("record_tree", &PlannerParams::record_tree,
+              "Copy the final search trees into PlanningResult.trees at plan exit (one copy, "
+              "zero growth-loop cost). Debug/visualization; off by default.");
 
   nb::class_<Planner>(m, "Planner",
                       "plan() is const + reentrant: distinct Python threads may plan "

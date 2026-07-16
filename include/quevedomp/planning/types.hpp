@@ -156,12 +156,24 @@ struct PlanningStats {
   }
 };
 
+// One planner search tree, snapshotted AFTER planning when PlannerParams::record_tree is set
+// (roadmap R2). Data export, not instrumentation: a single copy at exit, zero hot-loop cost —
+// deliberately NOT the deferred PlanningTrace (live per-iteration tracing stays out of the core).
+struct TreeSnapshot {
+  std::vector<JointPosition> nodes; // configs, in insertion order (parents precede children)
+  std::vector<int> parents;         // parallel to nodes; -1 marks a root
+};
+
 struct PlanningResult {
   PlanningStatus status = PlanningStatus::NoSolution;
   Path path;                   // joint-space waypoints (untimed); empty unless Success
   PlanningStats stats;         // attribution for the run
   std::uint64_t used_seed = 0; // ALWAYS populated, passed or auto-generated (spec §5.2)
   std::string message;         // human-readable detail (esp. why a problem was InvalidProblem)
+
+  // Filled only when PlannerParams::record_tree: [start tree, goal tree] for RRT-Connect
+  // (empty on pre-search failures — invalid problem, colliding start, IK-less goal).
+  std::vector<TreeSnapshot> trees;
 
   [[nodiscard]] bool ok() const noexcept { return status == PlanningStatus::Success; }
 };

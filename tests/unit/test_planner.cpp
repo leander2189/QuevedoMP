@@ -220,3 +220,31 @@ TEST(RrtConnect, GoalInCollisionIsNoSolution) {
   const auto r = planner->plan(problem_to(q2(-1, -1), q2(0, -1), 1.0, 5)); // goal inside wall
   EXPECT_EQ(r.status, PlanningStatus::NoSolution);
 }
+
+// ---- R2: record_tree snapshot ---------------------------------------------------------------
+
+TEST(RrtConnect, RecordTreeSnapshotsFinalTrees) {
+  auto f = make_fixture(/*with_wall=*/true); // blocked straight line => a real search happens
+  PlannerParams p = default_params();
+  p.record_tree = true;
+  const auto planner = make_planner(p, f.robot, f.scene);
+  const auto r = planner->plan(problem_to(q2(-1, -1), q2(1, -1), 5.0, 11));
+  ASSERT_TRUE(r.ok()) << r.message;
+
+  ASSERT_EQ(r.trees.size(), 2u);                                    // [start, goal]
+  EXPECT_LT((r.trees[0].nodes.at(0) - q2(-1, -1)).norm(), 1e-12);   // start tree rooted at start
+  EXPECT_GT(r.trees[0].nodes.size() + r.trees[1].nodes.size(), 2u); // search actually grew
+  for (const auto &t : r.trees) {
+    ASSERT_EQ(t.nodes.size(), t.parents.size());
+    for (std::size_t i = 0; i < t.parents.size(); ++i) {
+      EXPECT_GE(t.parents[i], -1);
+      EXPECT_LT(t.parents[i], static_cast<int>(i)); // parents precede children
+    }
+  }
+
+  // Off by default: result carries no trees.
+  const auto r2 = make_planner(default_params(), f.robot, f.scene)
+                      ->plan(problem_to(q2(-1, -1), q2(1, -1), 5.0, 11));
+  ASSERT_TRUE(r2.ok());
+  EXPECT_TRUE(r2.trees.empty());
+}

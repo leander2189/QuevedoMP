@@ -208,6 +208,25 @@ def test_lever_weights_and_sweep_mode() -> None:
         q.make_planner(bad, robot, scene)
 
 
+# ---- R2: exploration-tree snapshot ---------------------------------------------------------------
+
+
+def test_record_tree_snapshot() -> None:
+    model, robot, scene = make_fixture(True)
+    params = q.PlannerParams()
+    params.record_tree = True
+    r = q.make_planner(params, robot, scene).plan(problem_to([-1, -1], [1, -1], seed=2))
+    assert r.ok()
+    assert len(r.trees) == 2  # [start, goal]
+    assert np.allclose(r.trees[0].nodes[0], [-1, -1])
+    for t in r.trees:
+        assert len(t.nodes) == len(t.parents)
+        assert all(p < i for i, p in enumerate(t.parents))  # parents precede children
+
+    off = q.make_planner(q.PlannerParams(), robot, scene).plan(problem_to([-1, -1], [1, -1], seed=2))
+    assert off.ok() and len(off.trees) == 0
+
+
 # ---- GIL release (the IDE's responsiveness contract, ADR-016) -----------------------------------
 
 

@@ -92,6 +92,31 @@ def test_session_plan_and_listeners(session: StudioSession) -> None:
     session.attempt_listeners.clear()
 
 
+def test_session_parametrize_timed_trajectory(session: StudioSession) -> None:
+    session.set_start(np.zeros(6))
+    session.set_goal_joints(GOAL)
+    attempt = session.plan(seed=5)
+    assert attempt.result.ok()
+
+    tj = session.parametrize(attempt, tip_linear_velocity=0.6, max_jerk=60.0,
+                             tip_link="wrist_3_link")
+    assert tj.duration > 0.0
+    assert session.trajectory is tj
+    assert np.all(np.diff(tj.times) > 0)  # monotone time
+    assert tj.positions.shape == tj.velocities.shape == tj.accelerations.shape
+    assert np.linalg.norm(tj.velocities[0]) < 1e-6  # rest-to-rest
+    assert np.linalg.norm(tj.velocities[-1]) < 1e-6
+    assert tj.max_jerk_violation <= 1e-2  # certified by the jerk kernel
+    # sample() hits the endpoints and clamps outside [0, duration].
+    assert np.allclose(tj.sample(0.0), tj.positions[0])
+    assert np.allclose(tj.sample(tj.duration + 1.0), tj.positions[-1])
+
+    # A new plan invalidates the stored timing.
+    session.plan(seed=6)
+    assert session.trajectory is None
+    session.goal = None
+
+
 def test_session_save_load_round_trip(tmp_path: Path, session: StudioSession) -> None:
     session.add_obstacle(
         "keeper", q.BoxShape(np.array([0.1, 0.1, 0.1])),
@@ -212,6 +237,69 @@ def test_interactive_ik_is_stable(session: StudioSession) -> None:
     assert a.success and b.success
     assert a.restarts == 0 and b.restarts == 0
     assert np.allclose(a.q, b.q)
+
+
+def test_app_parameterize_plots_and_timed_play(app: StudioApp) -> None:
+    app.set_config(np.zeros(6))
+    app._set_start()
+    app.set_config(GOAL)
+    app._set_goal()
+    assert app.plan_now(seed=13).result.ok()
+    app.traj_tip_speed.value = 0.6
+    app.traj_jerk.value = 60.0
+    app.parametrize_now()
+    assert "s ·" in app.traj_status.value, app.traj_status.value
+    assert len(app._plot_handles) == 3  # joint vel, joint acc, tip speed
+
+    tj = app.session.trajectory
+    assert tj is not None
+    app.time_scale.value = 10.0  # 10x real time keeps the test fast
+    app.play_timed(blocking=True)
+    assert not app._playing
+    assert np.allclose(app.session.q, tj.positions[-1], atol=1e-9)
+
+
+def test_app_exploration_tree_view(app: StudioApp) -> None:
+    # A direct connection leaves only tree roots (nothing to draw), so stage an obstacle that
+    # BLOCKS the straight zeros→GOAL edge while keeping both endpoints free: try boxes on the
+    # swept EE arc until one placement does exactly that.
+    def drop_wall() -> None:
+        if "tree_wall" in app.session.obstacles:
+            app.session.remove_obstacle("tree_wall")
+            app.obstacle_view.remove("tree_wall")
+
+    ws = app.session.scene.make_workspace()
+    try:
+        placed = False
+        for t in (0.5, 0.45, 0.55, 0.4, 0.6):
+            pos = q.fk(app.session.model, t * GOAL, "wrist_3_link").translation()
+            app.add_obstacle("tree_wall", q.BoxShape(np.array([0.04, 0.04, 0.04])),
+                             q.Transform.from_translation(pos))
+            ends_free = (not app.session.collision_state(np.zeros(6)).in_collision
+                         and not app.session.collision_state(GOAL).in_collision)
+            blocked = not q.check_edge(app.session.scene, app.session.robot, np.zeros(6), GOAL,
+                                       0.05, q.QueryOptions(), ws).valid
+            if ends_free and blocked:
+                placed = True
+                break
+            drop_wall()
+        assert placed, "could not stage a blocking obstacle on the swept arc"
+
+        app.set_config(np.zeros(6))
+        app._set_start()
+        app.set_config(GOAL)
+        app._set_goal()
+        app.show_tree.value = True
+        attempt = app.plan_now(seed=12)
+        assert attempt.result.ok()
+        assert len(attempt.result.trees) == 2
+        assert len(app._tree_nodes) > 0  # tree segments drawn
+
+        app.show_tree.value = False
+        app.plan_now(seed=12)
+        assert len(app._tree_nodes) == 0  # cleared when not recorded
+    finally:
+        drop_wall()
 
 
 def test_app_ik_branch_picker(app: StudioApp) -> None:

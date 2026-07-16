@@ -12,6 +12,11 @@
 > 3. **Commit after each task** (small, atomic, revertible — spec §"Final Notes").
 > 4. Where this plan and the spec disagree on *mechanics*, this plan wins; where they
 >    disagree on *architecture/contracts*, the spec wins. Deviations are logged in §D below.
+>
+> **STATUS (2026-07-15): v0 COMPLETE — this document is now the frozen v0 record.** Every task
+> is ✅ with evidence or explicitly parked (MoveIt gate, capture, P5/P7b — rationale inline).
+> Post-v0 work continues in **`QuevedoMP-ROADMAP-v1.md`**, which carries the standing
+> invariants (performance contract, D2, ADR discipline) forward unchanged.
 
 ---
 

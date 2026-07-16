@@ -39,7 +39,14 @@ DTC cells, the SRDF-derived ACM) wired automatically; for any other robot pass `
    trace; **scrub** animates the robot along the path. *max link sweep* (mm, Task 3.3d P3)
    switches edge checking to a workspace-stated guarantee — no point of the robot moves more
    than that between collision samples — overriding the per-joint *edge check step* when > 0.
-4. **Sessions**: the *Session* panel saves/loads the whole problem setup — robot + ACM and
+4. **Trajectory** (roadmap R2): after a plan, set the accel / tip-speed / tip-accel / jerk caps
+   and hit **Parameterize** — the (smoothed) path is spline-fitted, re-validated against the
+   scene, and time-parameterized (Task 3.4; jerk-certified when a jerk cap is set). **▶ Play
+   (timed)** animates the robot in real time (× time scale) with the actual velocity profile,
+   and the *Plots* folder charts joint velocity/acceleration and tip speed over time. In the
+   *Planning* panel, *record exploration tree* snapshots the RRT trees at plan exit and draws
+   them as end-effector line clouds (start tree blue, goal tree orange).
+5. **Sessions**: the *Session* panel saves/loads the whole problem setup — robot + ACM and
    obstacles (Task 2a.5 serializer blobs, the same format Phase 3b capture bundles will carry)
    plus start/goal, timeout, edge step, and planner settings — so a benchmark problem is one
    *Load* away. Paths resolve inside the container (e.g. `sessions/scene.qmps` lands in the

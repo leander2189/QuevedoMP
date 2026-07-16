@@ -95,6 +95,29 @@ class Attempt:
     smoothed: bool = False
 
 
+@dataclass
+class TimedTrajectory:
+    """A time-parameterized trajectory (Task 3.4) ready for playback and plotting."""
+
+    times: np.ndarray          # (n,) seconds from start, monotone
+    positions: np.ndarray      # (n, dof)
+    velocities: np.ndarray     # (n, dof)
+    accelerations: np.ndarray  # (n, dof)
+    duration: float
+    message: str = ""
+    jerk_passes: int = 0
+    max_jerk_violation: float = 0.0
+
+    def sample(self, t: float) -> np.ndarray:
+        """Configuration at time t (clamped), linear between nodes — dense enough at N>=200."""
+        t = float(np.clip(t, self.times[0], self.times[-1]))
+        k = int(np.searchsorted(self.times, t, side="right") - 1)
+        k = min(max(k, 0), len(self.times) - 2)
+        dt = self.times[k + 1] - self.times[k]
+        a = (t - self.times[k]) / dt if dt > 0 else 0.0
+        return (1.0 - a) * self.positions[k] + a * self.positions[k + 1]
+
+
 class StudioSession:
     """Robot + environment + planning state behind the studio UI."""
 
@@ -138,6 +161,7 @@ class StudioSession:
         self.smooth = True
 
         self.attempts: list[Attempt] = []
+        self.trajectory: Optional[TimedTrajectory] = None  # last parametrize() output
         self.attempt_listeners: list[Callable[[Attempt], None]] = []
         self._plan_thread: Optional[threading.Thread] = None
         self._ik = q.make_numerical_ik(self.model)
@@ -329,6 +353,7 @@ class StudioSession:
             smoothed = True
 
         attempt = Attempt(len(self.attempts), self.start.copy(), self.goal, result, path, smoothed)
+        self.trajectory = None  # timing belongs to the previous plan
         self.attempts.append(attempt)
         for listener in self.attempt_listeners:
             try:
@@ -355,6 +380,66 @@ class StudioSession:
 
         self._plan_thread = threading.Thread(target=run, name="quevedomp-plan", daemon=True)
         self._plan_thread.start()
+
+    # ---- Time parameterization (Task 3.4 / roadmap R2) ------------------------------------------
+
+    def parametrize(
+        self,
+        attempt: Optional[Attempt] = None,
+        *,
+        default_acceleration: float = 8.0,
+        tip_linear_velocity: float = 0.0,
+        tip_linear_acceleration: float = 0.0,
+        max_jerk: float = 0.0,
+        tip_link: str = "",
+        nodes: int = 200,
+    ) -> TimedTrajectory:
+        """Time-parameterize an attempt's (smoothed) path: fit a C4 spline, RE-VALIDATE it
+        against the current scene at the planner's edge fidelity, then run the Task 3.4
+        parameterizer (JerkLimited when max_jerk > 0). Limits come from the URDF (+ yaml
+        extension), with `default_acceleration` where the model has none and the scalar tip /
+        jerk caps applied uniformly. Stores and returns the trajectory for playback/plots."""
+        attempt = attempt if attempt is not None else (self.attempts[-1] if self.attempts else None)
+        if attempt is None or len(attempt.path) < 2:
+            raise RuntimeError("parametrize: no planned attempt with a path — plan first")
+
+        disc = q.EdgeDiscretization()
+        disc.joint_resolution = self.planner_params.edge_resolution
+        if self.planner_params.max_link_sweep > 0:
+            disc.max_link_sweep = self.planner_params.max_link_sweep
+            disc.lever_weights = self.lever_weights()
+        fit = q.fit_collision_free(
+            attempt.path, self.scene, self.robot, disc, self.query_options, self._ws
+        )
+        if not fit.success:
+            raise RuntimeError(fit.message)
+
+        task = q.TaskLimits()
+        task.max_linear_velocity = tip_linear_velocity
+        task.max_linear_acceleration = tip_linear_acceleration
+        task.frame = tip_link
+        lim = q.limits_from_model(self.model, task, default_acceleration)
+        opt = q.ParameterizationOptions()
+        opt.nodes = nodes
+        if max_jerk > 0:
+            lim.max_jerk = np.full(self.dof, float(max_jerk))
+            opt.mode = q.ParameterizationMode.JerkLimited
+        r = q.parametrize(self.model, fit.spline, lim, opt)
+        if not r.success:
+            raise RuntimeError(r.message)
+
+        wp = r.trajectory
+        self.trajectory = TimedTrajectory(
+            times=np.array([w.time for w in wp]),
+            positions=np.array([w.state.pos for w in wp]),
+            velocities=np.array([w.state.vel for w in wp]),
+            accelerations=np.array([w.state.acc for w in wp]),
+            duration=r.duration,
+            message=r.message,
+            jerk_passes=r.jerk_passes,
+            max_jerk_violation=r.max_jerk_violation,
+        )
+        return self.trajectory
 
     # ---- Save / load (Task 2a.5 serializers -> Phase 3b captures open here later) ---------------
 

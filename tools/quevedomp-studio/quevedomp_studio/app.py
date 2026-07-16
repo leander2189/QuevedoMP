@@ -23,6 +23,8 @@ from .session import Attempt, StudioSession
 PATH_COLOR = (80, 140, 240)
 START_COLOR = (80, 200, 80)
 GOAL_COLOR = (80, 120, 240)
+TREE_COLORS = ((110, 170, 255), (255, 170, 90))  # start tree, goal tree (R2 exploration view)
+PLOT_PALETTE = ("#e41a1c", "#377eb8", "#4daf4a", "#984ea3", "#ff7f00", "#a65628", "#f781bf")
 
 
 class StudioApp:
@@ -39,6 +41,8 @@ class StudioApp:
         self.robot_view = RobotView(self.server, self.session)
         self.obstacle_view = ObstacleView(self.server, self.session)
         self._path_nodes: list = []
+        self._tree_nodes: list = []
+        self._plot_handles: list = []
         self._obstacle_counter = len(self.session.obstacles)
         self._playing = False
         self._syncing_sliders = False
@@ -48,6 +52,7 @@ class StudioApp:
         self._build_ik_panel()
         self._build_obstacle_panel()
         self._build_planning_panel()
+        self._build_trajectory_panel()
 
         # A loaded session already carries obstacles + a configured problem: render them.
         for obstacle in self.session.obstacles.values():
@@ -356,6 +361,9 @@ class StudioApp:
             )
             self.do_smooth = self.server.gui.add_checkbox("shortcut smoothing",
                                                           initial_value=bool(self.session.smooth))
+            self.show_tree = self.server.gui.add_checkbox(
+                "record exploration tree", initial_value=False
+            )  # R2: one snapshot copy at plan exit; drawn as line clouds per tree
             self.plan_button = self.server.gui.add_button("Plan")
             self.plan_status = self.server.gui.add_text("result", initial_value="—", disabled=True)
             self.scrub = self.server.gui.add_slider("scrub", min=0.0, max=1.0, step=0.002,
@@ -409,6 +417,7 @@ class StudioApp:
         self.session.smooth = bool(self.do_smooth.value)
         self.session.planner_params.edge_resolution = float(self.edge_res.value)
         self.session.planner_params.max_link_sweep = float(self.link_sweep.value) * 1e-3
+        self.session.planner_params.record_tree = bool(self.show_tree.value)
         seed = int(self.seed.value) or None
         self.plan_status.value = "planning…"
         self.plan_button.disabled = True
@@ -416,6 +425,7 @@ class StudioApp:
 
     def plan_now(self, seed: Optional[int] = None) -> Attempt:
         """Synchronous plan + display — the headless smoke-test entry point."""
+        self.session.planner_params.record_tree = bool(self.show_tree.value)
         attempt = self.session.plan(seed)
         self._show_attempt(attempt)
         return attempt
@@ -443,6 +453,8 @@ class StudioApp:
         else:
             self.plan_status.value = f"{r.status} · {r.message} · seed {r.used_seed}"
             self._clear_path()
+        self._draw_trees(r)  # draws when record_tree captured them, clears otherwise
+        self.traj_status.value = "—"  # a new plan invalidates the previous timing
 
     def _draw_path(self, path) -> None:
         self._clear_path()
@@ -471,6 +483,165 @@ class StudioApp:
         for node in self._path_nodes:
             node.remove()
         self._path_nodes = []
+
+    def _draw_trees(self, result) -> None:
+        """R2 exploration view: each snapshot tree as parent→child EE segments (start=blue,
+        goal=orange). Empty result.trees just clears the previous drawing."""
+        for node in self._tree_nodes:
+            node.remove()
+        self._tree_nodes = []
+        if not getattr(result, "trees", None):
+            return
+        model, ee = self.session.model, self._ee()
+        for t_idx, tree in enumerate(result.trees):
+            points = np.array([q.fk(model, node, ee).translation() for node in tree.nodes])
+            segments = np.array(
+                [(points[parent], points[i]) for i, parent in enumerate(tree.parents) if parent >= 0]
+            )
+            if len(segments) == 0:
+                continue
+            color = TREE_COLORS[min(t_idx, len(TREE_COLORS) - 1)]
+            self._tree_nodes.append(
+                self.server.scene.add_line_segments(
+                    f"/plan/tree_{t_idx}", points=segments,
+                    colors=np.tile(np.array([color]), (len(segments), 2, 1)),
+                )
+            )
+
+    # ---- Trajectory (Task 3.4 in the studio — roadmap R2) -----------------------------------
+
+    def _build_trajectory_panel(self) -> None:
+        with self.server.gui.add_folder("Trajectory"):
+            self.traj_accel = self.server.gui.add_number(
+                "default accel (rad/s²)", initial_value=8.0, min=0.1, max=100.0
+            )
+            self.traj_tip_speed = self.server.gui.add_number(
+                "tip speed cap (m/s, 0=off)", initial_value=0.0, min=0.0, max=10.0, step=0.05
+            )
+            self.traj_tip_accel = self.server.gui.add_number(
+                "tip accel cap (m/s², 0=off)", initial_value=0.0, min=0.0, max=100.0, step=0.5
+            )
+            self.traj_jerk = self.server.gui.add_number(
+                "jerk limit (rad/s³, 0=off)", initial_value=0.0, min=0.0, max=1000.0, step=5.0
+            )
+            self.param_button = self.server.gui.add_button("Parameterize")
+            self.traj_status = self.server.gui.add_text("trajectory", initial_value="—",
+                                                        disabled=True)
+            self.play_timed_button = self.server.gui.add_button("▶ Play (timed)")
+            self.time_scale = self.server.gui.add_number("time scale ×", initial_value=1.0,
+                                                         min=0.1, max=10.0, step=0.1)
+        self.plots_folder = self.server.gui.add_folder("Plots")
+        self.param_button.on_click(lambda _e: self._on_parameterize())
+        self.play_timed_button.on_click(lambda _e: self._on_play_timed_clicked())
+
+    def parametrize_now(self) -> None:
+        """Synchronous parameterize + plots — the headless smoke-test entry point."""
+        self._on_parameterize()
+
+    def _on_parameterize(self) -> None:
+        if self._last_attempt is None or not self._last_attempt.result.ok():
+            self.traj_status.value = "plan first"
+            return
+        try:
+            with self._ui_lock:
+                tj = self.session.parametrize(
+                    self._last_attempt,
+                    default_acceleration=float(self.traj_accel.value),
+                    tip_linear_velocity=float(self.traj_tip_speed.value),
+                    tip_linear_acceleration=float(self.traj_tip_accel.value),
+                    max_jerk=float(self.traj_jerk.value),
+                    tip_link=self._ee(),
+                )
+        except RuntimeError as error:
+            self.traj_status.value = f"FAILED: {error}"
+            return
+        jerk_note = (
+            f" · jerk certified in {tj.jerk_passes} passes"
+            if float(self.traj_jerk.value) > 0 else ""
+        )
+        self.traj_status.value = f"{tj.duration:.2f} s · {len(tj.times)} nodes{jerk_note}"
+        self._draw_plots(tj)
+
+    def _draw_plots(self, tj) -> None:
+        import viser.uplot as uplot
+
+        for handle in self._plot_handles:
+            handle.remove()
+        self._plot_handles = []
+        t = np.ascontiguousarray(tj.times)
+        names = [j.name for j in self.session.movable_joints()]
+
+        def joint_plot(title: str, matrix: np.ndarray):
+            series = (uplot.Series(label="t (s)"),) + tuple(
+                uplot.Series(label=names[i] if i < len(names) else f"j{i}",
+                             stroke=PLOT_PALETTE[i % len(PLOT_PALETTE)], width=1.5)
+                for i in range(matrix.shape[1])
+            )
+            data = (t,) + tuple(np.ascontiguousarray(matrix[:, i]) for i in range(matrix.shape[1]))
+            return self.server.gui.add_uplot(data=data, series=series, title=title, aspect=1.8)
+
+        with self.plots_folder:
+            self._plot_handles.append(joint_plot("joint velocity (rad/s)", tj.velocities))
+            self._plot_handles.append(joint_plot("joint acceleration (rad/s²)", tj.accelerations))
+            tip = np.ascontiguousarray(
+                np.array(
+                    [
+                        np.linalg.norm(
+                            (q.jacobian(self.session.model, tj.positions[k], self._ee())
+                             @ tj.velocities[k])[:3]
+                        )
+                        for k in range(len(t))
+                    ]
+                )
+            )
+            self._plot_handles.append(
+                self.server.gui.add_uplot(
+                    data=(t, tip),
+                    series=(uplot.Series(label="t (s)"),
+                            uplot.Series(label="‖v_tip‖ (m/s)", stroke="#377eb8", width=1.5)),
+                    title="tip speed (m/s)", aspect=1.8,
+                )
+            )
+
+    def _on_play_timed_clicked(self) -> None:
+        if self._playing:
+            self._playing = False  # acts as a Stop button while running
+            return
+        self.play_timed(blocking=False)
+
+    def play_timed(self, blocking: bool = False) -> None:
+        """Animate the robot along the parameterized trajectory in REAL time (× time scale) —
+        what the velocity profile actually looks like, unlike the constant-rate scrub."""
+        tj = self.session.trajectory
+        if tj is None or self._playing:
+            return
+        scale = max(float(self.time_scale.value), 1e-3)
+
+        def set_label(text: str) -> None:
+            try:
+                self.play_timed_button.label = text
+            except AttributeError:
+                pass
+
+        def run() -> None:
+            self._playing = True
+            start = time.monotonic()
+            try:
+                set_label("■ Stop")
+                while self._playing:
+                    t = (time.monotonic() - start) * scale
+                    self.set_config(tj.sample(t))
+                    if t >= tj.duration:
+                        break
+                    time.sleep(1.0 / 30.0)
+            finally:
+                self._playing = False
+                set_label("▶ Play (timed)")
+
+        if blocking:
+            run()
+        else:
+            threading.Thread(target=run, name="quevedomp-play-timed", daemon=True).start()
 
     def _on_scrub(self) -> None:
         attempt = self._last_attempt
