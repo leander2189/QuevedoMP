@@ -109,6 +109,7 @@ class ObstacleView:
             faces=faces,
             color=OBSTACLE_COLOR,
             flat_shading=True,
+            side='double',
         )
         self.nodes[obstacle.id] = node
         self.gizmos[obstacle.id] = gizmo
