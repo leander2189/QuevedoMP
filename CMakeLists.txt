@@ -78,6 +78,7 @@ add_library(quevedomp
   src/planning/planner.cpp
   src/planning/rrt_connect.cpp
   src/planning/shortcut_smoother.cpp
+  src/planning/trajectory_refiner.cpp
   src/parameterization/path_spline.cpp
   src/parameterization/parameterize.cpp
   src/clearance/clearance_field.cpp

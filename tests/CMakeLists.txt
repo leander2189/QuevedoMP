@@ -134,6 +134,10 @@ add_executable(test_smoother unit/test_smoother.cpp)
 target_link_libraries(test_smoother PRIVATE quevedomp::quevedomp GTest::gtest_main)
 gtest_discover_tests(test_smoother)
 
+add_executable(test_refiner unit/test_refiner.cpp)
+target_link_libraries(test_refiner PRIVATE quevedomp::quevedomp GTest::gtest_main)
+gtest_discover_tests(test_refiner)
+
 add_executable(test_collision_viz unit/test_collision_viz.cpp)
 target_link_libraries(test_collision_viz PRIVATE quevedomp::quevedomp GTest::gtest_main)
 gtest_discover_tests(test_collision_viz)

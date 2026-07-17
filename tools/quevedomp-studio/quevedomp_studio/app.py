@@ -54,6 +54,7 @@ class StudioApp:
         self._build_planning_panel()
         self._build_trajectory_panel()
         self._build_clearance_panel()
+        self._build_refine_panel()
 
         # A loaded session already carries obstacles + a configured problem: render them.
         for obstacle in self.session.obstacles.values():
@@ -682,6 +683,93 @@ class StudioApp:
         self._slice_node = self.server.scene.add_point_cloud(
             "/clearance/slice", points=points, colors=colors, point_size=res * stride * 0.9,
         )
+
+    # ---- Refine (CHOMP/TrajOpt — roadmap R4) -------------------------------------------------
+
+    def _build_refine_panel(self) -> None:
+        with self.server.gui.add_folder("Refine (CHOMP)"):
+            self.refine_standalone = self.server.gui.add_checkbox(
+                "standalone (straight-line seed)", initial_value=False
+            )  # off = polish the last plan; on = optimize a straight line to the goal
+            self.refine_waypoints = self.server.gui.add_number(
+                "waypoints", initial_value=64, min=8, max=400, step=1
+            )
+            self.refine_iters = self.server.gui.add_number(
+                "iterations", initial_value=100, min=1, max=1000, step=1
+            )
+            self.refine_clear_w = self.server.gui.add_number(
+                "clearance weight", initial_value=1.0, min=0.0, max=50.0, step=0.5
+            )
+            self.refine_smooth_w = self.server.gui.add_number(
+                "smoothness weight", initial_value=1.0, min=0.0, max=50.0, step=0.5
+            )
+            self.refine_eps = self.server.gui.add_number(
+                "clearance ε (m)", initial_value=0.10, min=0.01, max=1.0, step=0.01
+            )
+            self.refine_step = self.server.gui.add_number(
+                "step size", initial_value=0.1, min=0.001, max=1.0, step=0.01
+            )
+            self.refine_button = self.server.gui.add_button("Refine (CHOMP)")
+            self.refine_status = self.server.gui.add_text("refine", initial_value="—",
+                                                          disabled=True)
+        self.refine_button.on_click(lambda _e: self._on_refine_clicked())
+
+    def _refine_kwargs(self) -> dict:
+        return dict(
+            standalone=bool(self.refine_standalone.value),
+            waypoints=int(self.refine_waypoints.value),
+            max_iterations=int(self.refine_iters.value),
+            clearance_weight=float(self.refine_clear_w.value),
+            smoothness_weight=float(self.refine_smooth_w.value),
+            clearance_epsilon=float(self.refine_eps.value),
+            step_size=float(self.refine_step.value),
+            resolution=float(self.sdf_res.value) * 1e-3,  # shares the Clearance panel's res knob
+        )
+
+    def _on_refine_clicked(self) -> None:
+        if self.session.is_planning:
+            return
+        if self.session.goal is None:
+            self.refine_status.value = "set a goal first"
+            return
+        if not self.refine_standalone.value and self._last_attempt is None:
+            self.refine_status.value = "plan first (or tick standalone)"
+            return
+        # The certificate must validate at the same fidelity the plan used.
+        self.session.timeout = float(self.timeout.value)
+        self.session.planner_params.edge_resolution = float(self.edge_res.value)
+        self.session.planner_params.max_link_sweep = float(self.link_sweep.value) * 1e-3
+        self.refine_status.value = "refining…"
+        self.refine_button.disabled = True
+        self.plan_button.disabled = True
+        self.session.refine_async(self._on_refine_done, **self._refine_kwargs())
+
+    def refine_now(self) -> Attempt:
+        """Synchronous refine + display — the headless smoke-test entry point."""
+        attempt = self.session.refine(**self._refine_kwargs())
+        self._on_refine_display(attempt)
+        return attempt
+
+    def _on_refine_done(self, attempt: Optional[Attempt]) -> None:
+        try:
+            if attempt is None:
+                self.refine_status.value = "ERROR — see server console"
+            else:
+                self._on_refine_display(attempt)
+        finally:
+            self.refine_button.disabled = False
+            self.plan_button.disabled = False
+
+    def _on_refine_display(self, attempt: Attempt) -> None:
+        self._show_attempt(attempt)  # draws the refined path + resets timing, like a plan
+        stats = attempt.result.stats
+        if attempt.result.ok():
+            self.refine_status.value = (
+                f"{stats.refiner_mode} · {len(attempt.path)} wp · "
+                f"{stats.time_total * 1e3:.0f} ms · certified free"
+            )
+        else:
+            self.refine_status.value = f"{attempt.result.status} · {attempt.result.message}"
 
     def _on_play_timed_clicked(self) -> None:
         if self._playing:

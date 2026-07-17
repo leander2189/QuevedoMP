@@ -66,9 +66,12 @@ void bind_clearance(nb::module_ &m) {
                                   nb::ndarray<double, nb::numpy, nb::shape<-1, 3>>(g, {n, 3}, og));
           },
           "points"_a, "Batched (N,3) query -> (distances (N,), gradients (N,3)).")
-      .def_prop_ro("origin", &ClearanceField::origin)
+      // origin()/dims() return Eigen vectors BY VALUE; def_prop_ro defaults to
+      // rv_policy::reference_internal, which would alias the destroyed temporary (garbage in
+      // optimized builds). Force a copy.
+      .def_prop_ro("origin", &ClearanceField::origin, nb::rv_policy::copy)
       .def_prop_ro("resolution", &ClearanceField::resolution)
-      .def_prop_ro("dims", &ClearanceField::dims, "(nx, ny, nz)")
+      .def_prop_ro("dims", &ClearanceField::dims, nb::rv_policy::copy, "(nx, ny, nz)")
       .def_prop_ro("built_on_gpu", &ClearanceField::built_on_gpu)
       .def_prop_ro("build_seconds", &ClearanceField::build_seconds)
       .def_prop_ro(

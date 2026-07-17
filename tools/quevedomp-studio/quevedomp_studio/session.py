@@ -162,6 +162,11 @@ class StudioSession:
 
         self.attempts: list[Attempt] = []
         self.trajectory: Optional[TimedTrajectory] = None  # last parametrize() output
+        # R4 refiner scratch: a ClearanceField + robot sphere cover, both cached. The field is
+        # rebuilt lazily and invalidated whenever the (quasi-static) environment changes.
+        self._clearance_field = None
+        self._clearance_resolution = 0.0
+        self._robot_spheres = None
         self.attempt_listeners: list[Callable[[Attempt], None]] = []
         self._plan_thread: Optional[threading.Thread] = None
         self._ik = q.make_numerical_ik(self.model)
@@ -278,15 +283,18 @@ class StudioSession:
         handle = self.scene.add_object(id, geometry, pose)
         obstacle = Obstacle(id, geometry, pose, handle)
         self.obstacles[id] = obstacle
+        self._clearance_field = None  # the SDF describes the old environment
         return obstacle
 
     def move_obstacle(self, id: str, pose: "q.Transform") -> None:
         obstacle = self.obstacles[id]
         obstacle.pose = pose
         self.scene.move_object(obstacle.handle, pose)
+        self._clearance_field = None
 
     def remove_obstacle(self, id: str) -> None:
         self.scene.remove_object(self.obstacles.pop(id).handle)
+        self._clearance_field = None
 
     def environment(self) -> "q.SceneDescription":
         env = q.SceneDescription()
@@ -380,6 +388,111 @@ class StudioSession:
 
         self._plan_thread = threading.Thread(target=run, name="quevedomp-plan", daemon=True)
         self._plan_thread.start()
+
+    def refine_async(
+        self, on_done: Callable[[Optional[Attempt]], None], **kwargs
+    ) -> None:
+        """Run refine() on the plan worker thread (shares the one-at-a-time guard with plan_async);
+        `on_done` fires with None if the refine raised. `kwargs` pass through to refine()."""
+        if self.is_planning:
+            raise RuntimeError("a plan or refine is already running")
+
+        def run() -> None:
+            attempt: Optional[Attempt] = None
+            try:
+                attempt = self.refine(**kwargs)
+            except Exception:
+                traceback.print_exc()
+            on_done(attempt)
+
+        self._plan_thread = threading.Thread(target=run, name="quevedomp-refine", daemon=True)
+        self._plan_thread.start()
+
+    # ---- Optimization refiner (roadmap R4) ------------------------------------------------------
+
+    def clearance_field(self, resolution: float = 0.02, force: bool = False):
+        """The environment's ClearanceField (R3), built lazily and cached. Invalidated whenever an
+        obstacle is added/moved/removed (the field is a snapshot of the quasi-static scene)."""
+        if (
+            force
+            or self._clearance_field is None
+            or abs(self._clearance_resolution - resolution) > 1e-12
+        ):
+            opts = q.ClearanceFieldOptions()
+            opts.resolution = resolution
+            self._clearance_field = q.ClearanceField.build(self.environment(), opts)
+            self._clearance_resolution = resolution
+        return self._clearance_field
+
+    def robot_spheres(self):
+        """Conservative sphere cover of the robot's collision geometry, cached (model-immutable)."""
+        if self._robot_spheres is None:
+            self._robot_spheres = q.decompose_robot(self.model, self.mesh_sources)
+        return self._robot_spheres
+
+    def refine(
+        self,
+        attempt: Optional[Attempt] = None,
+        *,
+        standalone: bool = False,
+        waypoints: int = 64,
+        max_iterations: int = 100,
+        smoothness_weight: float = 1.0,
+        clearance_weight: float = 1.0,
+        clearance_epsilon: float = 0.10,
+        step_size: float = 0.1,
+        resolution: float = 0.02,
+    ) -> Attempt:
+        """Run the R4 CHOMP/TrajOpt refiner and record the result as a new Attempt.
+
+        Refiner mode (default) polishes an existing attempt's (smoothed) path; `standalone=True`
+        seeds a straight line from start to a resolved goal instead. The output is CERTIFIED
+        collision-free by the exact backend — the ClearanceField only supplies gradients."""
+        if self.goal is None:
+            raise RuntimeError("no goal set — call set_goal_joints() or set_goal_pose() first")
+
+        params = q.RefinerParams()
+        params.waypoints = waypoints
+        params.max_iterations = max_iterations
+        params.smoothness_weight = smoothness_weight
+        params.clearance_weight = clearance_weight
+        params.clearance_epsilon = clearance_epsilon
+        params.step_size = step_size
+        params.edge_resolution = self.planner_params.edge_resolution
+        params.collision = self.query_options
+        if self.planner_params.max_link_sweep > 0:
+            params.max_link_sweep = self.planner_params.max_link_sweep
+            params.lever_weights = self.lever_weights()
+
+        if not standalone:
+            src = attempt if attempt is not None else (self.attempts[-1] if self.attempts else None)
+            if src is None or len(src.path) < 2:
+                raise RuntimeError("refine: no attempt with a path to polish — plan first (or "
+                                   "pass standalone=True)")
+            params.seed = [np.asarray(w, dtype=float) for w in src.path]
+
+        problem = q.PlanningProblem()
+        problem.start = self.start
+        problem.goal = self.goal.to_goal()
+        problem.collision = self.query_options
+        problem.timeout = self.timeout
+
+        field = self.clearance_field(resolution)
+        refiner = q.make_refiner(params, self.robot, self.scene, field, self.robot_spheres())
+        result = refiner.plan(problem)
+
+        attempt_out = Attempt(
+            len(self.attempts), self.start.copy(), self.goal, result, list(result.path),
+            smoothed=True,
+        )
+        self.trajectory = None
+        self.attempts.append(attempt_out)
+        for listener in self.attempt_listeners:
+            try:
+                listener(attempt_out)
+            except Exception:
+                traceback.print_exc()
+        return attempt_out
 
     # ---- Time parameterization (Task 3.4 / roadmap R2) ------------------------------------------
 

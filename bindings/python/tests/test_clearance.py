@@ -38,6 +38,15 @@ def test_field_metadata_and_grid_view(cell) -> None:
     assert data.dtype == np.float32
     assert field.build_seconds > 0.0
 
+    # origin()/dims() return Eigen vectors BY VALUE — assert every component (not just [0]) so a
+    # dangling rv_policy::reference_internal binding (garbage past [0] in optimized builds) is
+    # caught. Wall AABB x[-0.1,0.1] y[-2,0.5] z[-0.5,0.5], margin 0.20 ⇒ lo = (-0.3,-2.2,-0.7).
+    origin = np.asarray(field.origin)
+    assert origin.shape == (3,) and np.all(np.isfinite(origin))
+    np.testing.assert_allclose(origin, [-0.3, -2.2, -0.7], atol=0.03)
+    dims = np.asarray(field.dims)
+    assert dims.tolist() == [nx, ny, nz] and (dims > 1).all()
+
 
 def test_signed_distance_and_query(cell) -> None:
     _, _, _, field = cell

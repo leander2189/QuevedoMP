@@ -92,6 +92,28 @@ def test_session_plan_and_listeners(session: StudioSession) -> None:
     session.attempt_listeners.clear()
 
 
+def test_session_refine(session: StudioSession) -> None:
+    # R4: plan, then polish with the CHOMP/TrajOpt refiner. A non-empty environment is required for
+    # the ClearanceField, so seed one small obstacle clear of the zeros->GOAL motion.
+    if "refine_probe" not in session.obstacles:
+        session.add_obstacle(
+            "refine_probe", q.SphereShape(0.05), q.Transform.from_translation(np.array([0.8, 0.8, 0.1]))
+        )
+    session.set_start(np.zeros(6))
+    session.set_goal_joints(GOAL)
+    planned = session.plan(seed=7)
+    assert planned.result.ok(), planned.result.message
+
+    refined = session.refine(planned, waypoints=16, max_iterations=20, resolution=0.03)
+    assert refined is session.attempts[-1]
+    assert refined.result.stats.refiner_mode == "refiner"
+    if refined.result.ok():  # certificate may reject at coarse voxel res — the fallback is honest
+        assert len(refined.path) >= 3
+        assert np.linalg.norm(np.asarray(refined.path[0]) - np.zeros(6)) < 1e-6
+    session.remove_obstacle("refine_probe")
+    session.goal = None
+
+
 def test_session_parametrize_timed_trajectory(session: StudioSession) -> None:
     session.set_start(np.zeros(6))
     session.set_goal_joints(GOAL)
@@ -318,6 +340,33 @@ def test_app_clearance_heatmap(app: StudioApp) -> None:
     finally:
         app.session.remove_obstacle("sdf_probe")
         app.obstacle_view.remove("sdf_probe")
+
+
+def test_app_refine(app: StudioApp) -> None:
+    # R4 in the UI: plan, then the "Refine (CHOMP)" button polishes the last attempt and redraws.
+    app.add_obstacle(
+        "refine_probe", q.SphereShape(0.05),
+        q.Transform.from_translation(np.array([0.8, 0.8, 0.1])),
+    )
+    try:
+        app.set_config(np.zeros(6))
+        app._set_start()
+        app.set_config(GOAL)
+        app._set_goal()
+        app.plan_now(seed=9)
+
+        app.refine_waypoints.value = 16
+        app.refine_iters.value = 20
+        app.sdf_res.value = 30.0  # coarse field: keep the smoke test fast
+        refined = app.refine_now()
+        assert refined is app.session.attempts[-1]
+        assert app.refine_status.value != "—"
+        if refined.result.ok():
+            assert refined.result.stats.refiner_mode == "refiner"
+            assert len(app._path_nodes) > 0  # refined path drawn
+    finally:
+        app.session.remove_obstacle("refine_probe")
+        app.obstacle_view.remove("refine_probe")
 
 
 def test_app_ik_branch_picker(app: StudioApp) -> None:

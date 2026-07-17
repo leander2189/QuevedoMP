@@ -22,7 +22,9 @@
 #include <nanobind/stl/unique_ptr.h>
 #include <nanobind/stl/vector.h>
 
+#include "quevedomp/clearance/clearance_field.hpp"
 #include "quevedomp/planning/planner.hpp"
+#include "quevedomp/planning/refiner.hpp"
 #include "quevedomp/planning/smoother.hpp"
 #include "quevedomp/planning/types.hpp"
 
@@ -94,6 +96,8 @@ void bind_planning(nb::module_ &m) {
       .def_ro("collision_configs", &PlanningStats::collision_configs)
       .def_ro("batch_size_histogram", &PlanningStats::batch_size_histogram)
       .def_ro("iterations", &PlanningStats::iterations)
+      .def_ro("refiner_mode", &PlanningStats::refiner_mode,
+              "Which R4 refiner mode ran ('refiner' | 'standalone'); empty for sampling planners.")
       .def_ro("time_collision", &PlanningStats::time_collision)
       .def_ro("time_planner", &PlanningStats::time_planner)
       .def_ro("time_smoothing", &PlanningStats::time_smoothing)
@@ -183,4 +187,35 @@ void bind_planning(nb::module_ &m) {
            "Shortcut the path; output is collision-free and never longer than the input.");
 
   m.def("make_shortcut_smoother", &make_shortcut_smoother, "params"_a, "robot"_a, "scene"_a);
+
+  // ---- Refiner (roadmap R4) ------------------------------------------------------------------
+  nb::class_<RefinerParams>(m, "RefinerParams",
+                            "CHOMP/TrajOpt refiner config. seed non-empty = refiner mode "
+                            "(polish a feasible trajectory); empty = standalone (straight-line "
+                            "guess to a resolved goal).")
+      .def(nb::init<>())
+      .def_rw("seed", &RefinerParams::seed,
+              "Feasible trajectory to polish (list of (dof,) arrays); empty = standalone mode. "
+              "Its endpoints are the fixed start/goal of the optimization.")
+      .def_rw("waypoints", &RefinerParams::waypoints,
+              "Optimized trajectory length; the seed/straight line is resampled to this many.")
+      .def_rw("max_iterations", &RefinerParams::max_iterations)
+      .def_rw("smoothness_weight", &RefinerParams::smoothness_weight)
+      .def_rw("clearance_weight", &RefinerParams::clearance_weight)
+      .def_rw("clearance_epsilon", &RefinerParams::clearance_epsilon,
+              "CHOMP hinge width (m): obstacle cost is 0 beyond this clearance.")
+      .def_rw("step_size", &RefinerParams::step_size,
+              "Update step on the A^-1-preconditioned gradient (the metric that avoids kinks).")
+      .def_rw("convergence_tol", &RefinerParams::convergence_tol)
+      .def_rw("edge_resolution", &RefinerParams::edge_resolution)
+      .def_rw("max_link_sweep", &RefinerParams::max_link_sweep)
+      .def_rw("lever_weights", &RefinerParams::lever_weights)
+      .def_rw("collision", &RefinerParams::collision)
+      .def_rw("rng_seed", &RefinerParams::rng_seed,
+              "Seed for standalone goal IK; CHOMP is RNG-free.");
+
+  m.def("make_refiner", &make_refiner, "params"_a, "robot"_a, "scene"_a, "field"_a, "spheres"_a,
+        "Build the R4 optimization refiner over a ClearanceField (R3) + robot sphere cover. The "
+        "output is CERTIFIED collision-free by the exact scene backend — the field is never the "
+        "certificate. A first-class Planner: call plan(problem).");
 }

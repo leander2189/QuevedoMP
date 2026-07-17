@@ -17,7 +17,7 @@
 | R1 | High-poly inlet fixture + internal studio benchmark protocol (low-poly vs high-poly comparison; the GPU-crossover measuring stick) | S | ✅ 2026-07-16 (Leandro; see dtc_test_inlet/PROVENANCE.md — 7.3M tris, NOT watertight, baseline table recorded; the saved hires problem TIMES OUT and needs a look in the studio) |
 | R2 | Studio: trajectory playback (real-time via `parametrize`), joint vel/acc + tip-speed plots, RRT exploration-tree snapshot view | S–M | ✅ 2026-07-15 |
 | R3 | `ClearanceField` — GPU voxel SDF of the static environment (exact-seed + CUDA jump-flooding with equivalent OpenMP fallback, column-parity sign for watertight solids), conservative robot sphere cover, batched distance+gradient queries; analytic-SDF validation; studio clearance heatmap slice. **Separate type, NOT a `CollisionScene` extension.** | L | ✅ 2026-07-16 (ADR-018; hires inlet: 16.8M vox @10 mm in 1.34 s GPU JFA) |
-| R4 | Optimization-based refiner (CHOMP/TrajOpt-flavored) over R3, registered behind the `Planner` interface (refiner + standalone modes, per build-plan Task 3.3c); exact-backend re-validation certificate | L | — |
+| R4 | Optimization-based refiner (CHOMP/TrajOpt-flavored) over R3, registered behind the `Planner` interface (refiner + standalone modes, per build-plan Task 3.3c); exact-backend re-validation certificate | L | ✅ 2026-07-17 (ADR-019; `planning/refiner.{hpp,cpp}` `TrajectoryRefiner` + `make_refiner`, A⁻¹-preconditioned CHOMP, batched field gradients, exact certificate; C++ 206/206 + Python 64, studio `session.refine()`) |
 | R5 | Roadmap/multi-query planner (PRM-flavored) for quasi-static cells: construction = unbounded fat batches (where the GPU finally wins outright), queries = graph search + P6 smoother, target single-digit ms/plan | M–L | — |
 | R6 | Attached objects in `RobotInstance` (C++: grasped part moves collision geometry + ACM) → `quevedomp_tasks` MTC-lite layer in Python (Sequence/Alternatives, `PlanTo`, `IkBranches` via `solve_all`, `CartesianMove`, trajectory stitching + one final `parametrize`) | M | — |
 
@@ -27,6 +27,25 @@ recorded attempts, deterministic replay by seed, no core changes — build when 
 goal-sampling budget (wire `resolve_goal` to `solve_all` if ever needed); P7b GPU self-collision
 (the "GPU frees the CPU" lever if deployments get core-starved); MCAP; OMPL cross-check; wheels +
 notebook (Phase 4b polish).
+
+## R4 record (2026-07-17)
+
+- Core: `planning/refiner.{hpp,cpp}` — `TrajectoryRefiner : Planner` + `make_refiner(params,
+  robot, scene, field, spheres)`. CHOMP-flavored: smoothness (finite-difference acceleration) +
+  CHOMP obstacle hinge over the R3 sphere cover against the ClearanceField, mapped to joint space
+  by each sphere center's position Jacobian; update Q ← Q − step·A⁻¹·∇U with A = KᵀK factored once
+  (the preconditioner that keeps obstacle pushes from kinking). Refiner mode (seeded) + standalone
+  mode (straight line to a resolved goal); mode in `PlanningStats::refiner_mode`.
+- Certificate: the field only supplies gradients — every output edge is re-validated as ONE exact
+  `CollisionScene::query_batch`. Refiner mode never returns worse than its (re-certified) seed;
+  standalone returns `NoSolution` on a local minimum (ADR-018/019).
+- Contract: per-iteration clearance/gradient = ONE fat `ClearanceField::query` over all (waypoint ×
+  sphere) points; deterministic per seed, bit-identical across thread counts.
+- Registry: `"chomp"` is listed by `registered_planners()` but `make_planner` throws a directive
+  error pointing at `make_refiner` (it needs the field + spheres the `(params, robot, scene)`
+  signature can't carry — same reasoning as `make_shortcut_smoother`).
+- Studio: `StudioSession.refine()` (cached ClearanceField + sphere cover, invalidated on
+  environment edits).
 
 ## R2 record (2026-07-15)
 

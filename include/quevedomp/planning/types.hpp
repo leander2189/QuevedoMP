@@ -138,6 +138,10 @@ struct PlanningStats {
   std::map<std::size_t, std::uint64_t> batch_size_histogram;
   std::uint64_t iterations = 0; // nodes expanded (sampling) or iterations (optimization)
 
+  // Which optimizer mode ran, for the refiner (roadmap R4): "refiner" (seeded with a feasible
+  // trajectory) or "standalone" (straight-line guess). Empty for sampling planners.
+  std::string refiner_mode;
+
   // Time split, seconds. planner logic / collision / smoothing / parameterization are disjoint;
   // total is end-to-end wall time; first_solution is wall time to the first feasible path.
   double time_collision = 0.0;

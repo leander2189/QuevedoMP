@@ -51,6 +51,13 @@ DTC cells, the SRDF-derived ACM) wired automatically; for any other robot pass `
    which path ran); the *slice height* slider sweeps a heatmap layer through the scene
    (red = penetration/near, blue = far). Non-watertight meshes contribute unsigned distance
    only (ADR-012/ADR-018).
+   The **Refine (CHOMP)** panel (roadmap R4, ADR-019) runs the CHOMP/TrajOpt refiner over the
+   clearance field to polish the last plan (or a straight-line guess with *standalone*) toward
+   smoother, higher-clearance motion — clearance/smoothness weights, ε, iterations and waypoints
+   are knobs; the field resolution is shared with the *SDF resolution* control above. The output is
+   certified collision-free by the exact backend and recorded as a new attempt, so the scrub,
+   *Play*, plots and *Parameterize* apply to it unchanged (headless equivalent:
+   `StudioSession.refine()`).
 6. **Sessions**: the *Session* panel saves/loads the whole problem setup — robot + ACM and
    obstacles (Task 2a.5 serializer blobs, the same format Phase 3b capture bundles will carry)
    plus start/goal, timeout, edge step, and planner settings — so a benchmark problem is one

@@ -18,9 +18,23 @@ using Factory = std::function<std::unique_ptr<Planner>(
 
 // The registry. A function-local static (constructed on first use) avoids static-init-order
 // issues; adding a planner is one line here plus its factory in planners_internal.hpp.
+//
+// "chomp" (the R4 optimization refiner) is listed so it is discoverable via
+// registered_planners() and selecting it fails LOUDLY, never silently — but it cannot be built
+// through this (params, robot, scene) entry point: it needs a ClearanceField + robot sphere cover.
+// The stub throws a directive error pointing at make_refiner() (see refiner.hpp / ADR-019).
 const std::unordered_map<std::string, Factory> &registry() {
   static const std::unordered_map<std::string, Factory> r = {
       {"rrt_connect", &detail::make_rrt_connect},
+      {"chomp",
+       [](const PlannerParams &, std::shared_ptr<const RobotInstance>,
+          std::shared_ptr<const collision::CollisionScene>) -> std::unique_ptr<Planner> {
+         throw std::runtime_error(
+             "make_planner: the 'chomp' refiner needs a ClearanceField and a robot sphere cover "
+             "that this (params, robot, scene) entry point cannot carry; build it with "
+             "make_refiner(RefinerParams, robot, scene, field, spheres) instead (see "
+             "refiner.hpp).");
+       }},
   };
   return r;
 }
