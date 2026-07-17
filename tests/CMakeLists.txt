@@ -32,6 +32,10 @@ target_link_libraries(test_robot_robustness PRIVATE quevedomp::quevedomp GTest::
 gtest_discover_tests(test_robot_robustness PROPERTIES
   ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_SOURCE_DIR}/tests/fuzz/lsan_suppressions.txt")
 
+add_executable(test_clearance_field unit/test_clearance_field.cpp)
+target_link_libraries(test_clearance_field PRIVATE quevedomp::quevedomp GTest::gtest_main)
+gtest_discover_tests(test_clearance_field)
+
 add_executable(test_acm_env unit/test_acm_env.cpp)
 target_link_libraries(test_acm_env PRIVATE quevedomp::quevedomp GTest::gtest_main)
 target_compile_definitions(test_acm_env

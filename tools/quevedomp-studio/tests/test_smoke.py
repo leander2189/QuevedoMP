@@ -302,6 +302,24 @@ def test_app_exploration_tree_view(app: StudioApp) -> None:
         drop_wall()
 
 
+def test_app_clearance_heatmap(app: StudioApp) -> None:
+    app.add_obstacle(
+        "sdf_probe", q.BoxShape(np.array([0.1, 0.1, 0.1])),
+        q.Transform.from_translation(np.array([0.6, 0.0, 0.4])),
+    )
+    try:
+        app.sdf_res.value = 25.0  # coarse: keep the smoke test fast
+        app.build_clearance_now()
+        assert "vox" in app.sdf_status.value, app.sdf_status.value
+        assert app._slice_node is not None
+        app.sdf_slice.value = 0.8  # re-slicing redraws without raising
+        app._draw_clearance_slice()
+        assert app._slice_node is not None
+    finally:
+        app.session.remove_obstacle("sdf_probe")
+        app.obstacle_view.remove("sdf_probe")
+
+
 def test_app_ik_branch_picker(app: StudioApp) -> None:
     app.set_config(GOAL)
     app._snap_gizmo()  # gizmo at a reachable pose (the current EE pose)

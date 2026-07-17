@@ -46,7 +46,12 @@ DTC cells, the SRDF-derived ACM) wired automatically; for any other robot pass `
    and the *Plots* folder charts joint velocity/acceleration and tip speed over time. In the
    *Planning* panel, *record exploration tree* snapshots the RRT trees at plan exit and draws
    them as end-effector line clouds (start tree blue, goal tree orange).
-5. **Sessions**: the *Session* panel saves/loads the whole problem setup — robot + ACM and
+5. **Clearance** (roadmap R3): *Build clearance field* voxelizes the current obstacles into a
+   signed-distance field (GPU jump-flooding when a device is present — the status line says
+   which path ran); the *slice height* slider sweeps a heatmap layer through the scene
+   (red = penetration/near, blue = far). Non-watertight meshes contribute unsigned distance
+   only (ADR-012/ADR-018).
+6. **Sessions**: the *Session* panel saves/loads the whole problem setup — robot + ACM and
    obstacles (Task 2a.5 serializer blobs, the same format Phase 3b capture bundles will carry)
    plus start/goal, timeout, edge step, and planner settings — so a benchmark problem is one
    *Load* away. Paths resolve inside the container (e.g. `sessions/scene.qmps` lands in the

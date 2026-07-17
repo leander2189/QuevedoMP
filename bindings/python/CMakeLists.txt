@@ -32,6 +32,7 @@ nanobind_add_module(quevedomp_native
   src/bind_planning.cpp
   src/bind_capture.cpp
   src/bind_parameterization.cpp
+  src/bind_clearance.cpp
 )
 target_link_libraries(quevedomp_native PRIVATE quevedomp::quevedomp)
 set_target_properties(quevedomp_native PROPERTIES

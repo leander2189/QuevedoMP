@@ -14,6 +14,7 @@ void bind_collision(nb::module_ &m); // Task 4a.4
 void bind_planning(nb::module_ &m);  // Task 4a.5
 void bind_capture(nb::module_ &m);   // Task 4a.6 (Task 2a.5 serializers for studio save/load)
 void bind_parameterization(nb::module_ &m); // Task 3.4 (PathSpline + time parameterization)
+void bind_clearance(nb::module_ &m); // Roadmap R3 (ClearanceField GPU SDF)
 
 NB_MODULE(_native, m) {
   m.doc() = "QuevedoMP — GPU-accelerated robot-arm motion planning (nanobind bindings)";
@@ -25,4 +26,5 @@ NB_MODULE(_native, m) {
   bind_planning(m);
   bind_capture(m);
   bind_parameterization(m);
+  bind_clearance(m);
 }

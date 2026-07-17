@@ -80,6 +80,7 @@ add_library(quevedomp
   src/planning/shortcut_smoother.cpp
   src/parameterization/path_spline.cpp
   src/parameterization/parameterize.cpp
+  src/clearance/clearance_field.cpp
   src/capture/serialize.cpp
   src/viz/visualizer.cpp
 )
@@ -126,6 +127,14 @@ if(QUEVEDOMP_WITH_CUDA)
   enable_language(CUDA)
   message(STATUS "CUDA enabled: ${CMAKE_CUDA_COMPILER}")
   add_subdirectory(tools/cuda_smoke)
+
+  # ClearanceField's jump-flooding passes run as plain CUDA kernels (roadmap R3) with a runtime
+  # CPU fallback — the .cu only joins the library when the toolchain is available.
+  find_package(CUDAToolkit REQUIRED)
+  target_sources(quevedomp PRIVATE src/clearance/jfa.cu)
+  set_target_properties(quevedomp PROPERTIES CUDA_ARCHITECTURES 75)
+  target_link_libraries(quevedomp PRIVATE CUDA::cudart)
+  target_compile_definitions(quevedomp PRIVATE QUEVEDOMP_CLEARANCE_CUDA)
 endif()
 
 # ---- OptiX (Task 0.9 smoke test + Phase 2b backend) ------------------------------------

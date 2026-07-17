@@ -53,6 +53,7 @@ class StudioApp:
         self._build_obstacle_panel()
         self._build_planning_panel()
         self._build_trajectory_panel()
+        self._build_clearance_panel()
 
         # A loaded session already carries obstacles + a configured problem: render them.
         for obstacle in self.session.obstacles.values():
@@ -602,6 +603,85 @@ class StudioApp:
                     title="tip speed (m/s)", aspect=1.8,
                 )
             )
+
+    # ---- Clearance field (roadmap R3) --------------------------------------------------------
+
+    def _build_clearance_panel(self) -> None:
+        with self.server.gui.add_folder("Clearance"):
+            self.sdf_res = self.server.gui.add_number("SDF resolution (mm)", initial_value=10.0,
+                                                      min=2.0, max=100.0, step=1.0)
+            self.sdf_build_button = self.server.gui.add_button("Build clearance field")
+            self.sdf_status = self.server.gui.add_text("field", initial_value="—", disabled=True)
+            self.sdf_slice = self.server.gui.add_slider("slice height (z)", min=0.0, max=1.0,
+                                                        step=0.01, initial_value=0.5)
+            self.sdf_range = self.server.gui.add_number("color range ± (m)", initial_value=0.3,
+                                                        min=0.05, max=2.0, step=0.05)
+        self._clearance_field = None
+        self._slice_node = None
+        self.sdf_build_button.on_click(lambda _e: self._on_build_clearance())
+        self.sdf_slice.on_update(lambda _e: self._draw_clearance_slice())
+        self.sdf_range.on_update(lambda _e: self._draw_clearance_slice())
+
+    def build_clearance_now(self) -> None:
+        """Synchronous build + slice — the headless smoke-test entry point."""
+        self._on_build_clearance()
+
+    def _on_build_clearance(self) -> None:
+        if not self.session.obstacles:
+            self.sdf_status.value = "no obstacles — add environment first"
+            return
+        opts = q.ClearanceFieldOptions()
+        opts.resolution = float(self.sdf_res.value) * 1e-3
+        try:
+            with self._ui_lock:
+                self._clearance_field = q.ClearanceField.build(self.session.environment(), opts)
+        except RuntimeError as error:
+            self.sdf_status.value = f"FAILED: {error}"
+            return
+        f = self._clearance_field
+        nx, ny, nz = int(f.dims[0]), int(f.dims[1]), int(f.dims[2])
+        self.sdf_status.value = (
+            f"{nx}×{ny}×{nz} vox · {f.build_seconds * 1e3:.0f} ms · "
+            f"{'GPU' if f.built_on_gpu else 'CPU'} JFA"
+        )
+        self._draw_clearance_slice()
+
+    def _draw_clearance_slice(self) -> None:
+        """One z-layer of the SDF as a colored point cloud: red = penetration/near, white = at
+        the color-range edge, blue = far. The slider maps [0, 1] onto the grid height."""
+        f = self._clearance_field
+        if f is None:
+            return
+        if self._slice_node is not None:
+            self._slice_node.remove()
+            self._slice_node = None
+        data = np.asarray(f.data)  # (nz, ny, nx) float32 view
+        nz = data.shape[0]
+        zi = min(int(float(self.sdf_slice.value) * (nz - 1)), nz - 1)
+        layer = data[zi]  # (ny, nx)
+        res = float(f.resolution)
+        origin = np.asarray(f.origin)
+
+        stride = max(1, int(np.ceil(np.sqrt(layer.size / 60000.0))))  # ≤ ~60k points
+        ys, xs = np.mgrid[0 : layer.shape[0] : stride, 0 : layer.shape[1] : stride]
+        d = layer[ys, xs].astype(np.float64).ravel()
+        points = np.stack(
+            [
+                origin[0] + xs.ravel() * res,
+                origin[1] + ys.ravel() * res,
+                np.full(d.shape, origin[2] + zi * res),
+            ],
+            axis=1,
+        )
+        rng = max(float(self.sdf_range.value), 1e-6)
+        t = np.clip(d / rng, -1.0, 1.0)
+        colors = np.empty((len(d), 3))
+        near = t < 0  # penetration → solid red fading to white at the surface
+        colors[near] = np.stack([np.ones(near.sum()), 1 + t[near], 1 + t[near]], axis=1)
+        colors[~near] = np.stack([1 - t[~near], 1 - t[~near], np.ones((~near).sum())], axis=1)
+        self._slice_node = self.server.scene.add_point_cloud(
+            "/clearance/slice", points=points, colors=colors, point_size=res * stride * 0.9,
+        )
 
     def _on_play_timed_clicked(self) -> None:
         if self._playing:
