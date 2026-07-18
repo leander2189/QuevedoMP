@@ -15,10 +15,8 @@ from typing import Optional
 import numpy as np
 import viser
 
-import quevedomp as q
-
 from .context import StudioContext
-from .modes import IkMode, SceneMode, TrajectoryMode
+from .modes import IkMode, PlanMode, SceneMode, TrajectoryMode
 from .robot_view import ObstacleView, RobotView
 from .session import Attempt, StudioSession
 
@@ -40,12 +38,11 @@ class StudioApp:
         self.scene.build()  # renders any loaded obstacles too
         self.ik = IkMode(self.ctx)
         self.ik.build()
-        self._build_planning_panel()
+        self.plan = PlanMode(self.ctx)
+        self.plan.build()
         self.trajectory = TrajectoryMode(self.ctx)
         self.trajectory.build()
-        self._build_clearance_panel()
-        self._build_roadmap_panel()
-        self._modes = [self.scene, self.ik, self.trajectory]
+        self._modes = [self.scene, self.ik, self.plan, self.trajectory]
 
         self.set_config(self.session.q)  # syncs sliders + collision tint
         self._restore_plan_markers()
@@ -195,95 +192,96 @@ class StudioApp:
     def _on_ik_branch_pick(self) -> None:
         self.ik.on_branch_pick()
 
-    # ---- Planning --------------------------------------------------------------------------
+    # ---- Plan-mode aliases (ADR-021 transition) ----------------------------------------------
 
-    def _build_planning_panel(self) -> None:
-        with self.server.gui.add_folder("Planning"):
-            set_start = self.server.gui.add_button("Set start = current")
-            set_goal = self.server.gui.add_button("Set goal = current")
-            self.use_ik_goal = self.server.gui.add_checkbox("goal = IK gizmo pose", initial_value=False)
-            self.timeout = self.server.gui.add_number("timeout (s)", initial_value=float(self.session.timeout),
-                                                      min=0.1, max=60.0)
-            self.seed = self.server.gui.add_number("seed (0 = auto)", initial_value=0, min=0, max=2**31)
-            self.edge_res = self.server.gui.add_number(
-                "edge check step (rad|m)", initial_value=self.session.planner_params.edge_resolution,
-                min=0.001, max=0.2, step=0.001,
-            )
-            self.link_sweep = self.server.gui.add_number(
-                "max link sweep (mm, 0 = off)",  # P3: workspace-bounded edge steps; overrides ↑
-                initial_value=self.session.planner_params.max_link_sweep * 1e3,
-                min=0.0, max=100.0, step=0.5,
-            )
-            self.do_smooth = self.server.gui.add_checkbox("shortcut smoothing",
-                                                          initial_value=bool(self.session.smooth))
-            self.show_tree = self.server.gui.add_checkbox(
-                "record exploration tree", initial_value=False
-            )  # R2: one snapshot copy at plan exit; drawn as line clouds per tree
-            self.plan_button = self.server.gui.add_button("Plan")
-            self.plan_status = self.server.gui.add_text("result", initial_value="—", disabled=True)
+    @property
+    def use_ik_goal(self):
+        return self.plan.use_ik_goal
 
-        set_start.on_click(lambda _e: self._set_start())
-        set_goal.on_click(lambda _e: self._set_goal())
-        self.plan_button.on_click(lambda _e: self._on_plan_clicked())
+    @property
+    def timeout(self):
+        return self.plan.timeout
 
-    def _ee(self) -> str:
-        return self.ctx.ee_link
+    @property
+    def seed(self):
+        return self.plan.seed
+
+    @property
+    def edge_res(self):
+        return self.plan.edge_res
+
+    @property
+    def link_sweep(self):
+        return self.plan.link_sweep
+
+    @property
+    def do_smooth(self):
+        return self.plan.do_smooth
+
+    @property
+    def show_tree(self):
+        return self.plan.show_tree
+
+    @property
+    def plan_status(self):
+        return self.plan.status
+
+    @property
+    def prm_nodes(self):
+        return self.plan.prm_nodes
+
+    @property
+    def prm_k(self):
+        return self.plan.prm_k
+
+    @property
+    def prm_seed(self):
+        return self.plan.prm_seed
+
+    @property
+    def prm_status(self):
+        return self.plan.prm_status
+
+    @property
+    def sdf_res(self):
+        return self.plan.sdf_res
+
+    @property
+    def sdf_status(self):
+        return self.plan.sdf_status
+
+    @property
+    def sdf_slice(self):
+        return self.plan.sdf_slice
+
+    @property
+    def _slice_node(self):
+        return self.plan._slice_node
 
     def _set_start(self) -> None:
-        self.session.set_start()
-        self.ctx.attempt_view.set_start_marker(self.session.start)
+        self.plan.set_start()
 
     def _set_goal(self) -> None:
-        if self.use_ik_goal.value:
-            target = q.Transform.from_parts(
-                np.asarray(self.ik_gizmo.position), np.asarray(self.ik_gizmo.wxyz)
-            )
-            self.session.set_goal_pose(self._ee(), target)
-        else:
-            self.session.set_goal_joints()
-        self.ctx.attempt_view.set_goal_marker(self.session.q)
-
-    def _on_plan_clicked(self) -> None:
-        if self.session.is_planning:
-            return
-        self.session.timeout = float(self.timeout.value)
-        self.session.smooth = bool(self.do_smooth.value)
-        self.session.planner_params.edge_resolution = float(self.edge_res.value)
-        self.session.planner_params.max_link_sweep = float(self.link_sweep.value) * 1e-3
-        self.session.planner_params.record_tree = bool(self.show_tree.value)
-        seed = int(self.seed.value) or None
-        self.plan_status.value = "planning…"
-        self.plan_button.disabled = True
-        self.session.plan_async(self._on_plan_done, seed=seed)
+        self.plan.set_goal()
 
     def plan_now(self, seed: Optional[int] = None) -> Attempt:
         """Synchronous plan + display — the headless smoke-test entry point."""
-        self.session.planner_params.record_tree = bool(self.show_tree.value)
-        attempt = self.session.plan(seed)
-        self._show_attempt(attempt)
-        return attempt
+        return self.plan.plan_now(seed)
 
-    def _on_plan_done(self, attempt: Optional[Attempt]) -> None:
-        try:
-            if attempt is None:
-                self.plan_status.value = "ERROR — see server console"
-            else:
-                self._show_attempt(attempt)
-        finally:
-            self.plan_button.disabled = False
+    def build_clearance_now(self) -> None:
+        """Synchronous clearance-field build + slice — the headless smoke-test entry point."""
+        self.plan.build_clearance_now()
 
-    def _show_attempt(self, attempt: Attempt) -> None:
-        r = attempt.result
-        stats = r.stats
-        if r.ok():
-            self.plan_status.value = (
-                f"{r.status} · {len(attempt.path)} wp · {stats.time_total * 1e3:.0f} ms · "
-                f"{stats.collision_configs} configs · seed {r.used_seed}"
-            )
-        else:
-            self.plan_status.value = f"{r.status} · {r.message} · seed {r.used_seed}"
-        # Draws path/trees and fires the attempt listeners (Trajectory resets timing + scrub).
-        self.ctx.show_attempt(attempt)
+    def _draw_clearance_slice(self) -> None:
+        self.plan.draw_clearance_slice()
+
+    def build_roadmap_now(self):
+        """Synchronous roadmap build — the headless smoke-test entry point."""
+        return self.plan.build_roadmap_now()
+
+    def query_roadmap_now(self) -> Attempt:
+        """Synchronous roadmap build-if-needed + query — the headless smoke-test entry point."""
+        return self.plan.query_roadmap_now()
 
     # ---- Trajectory-mode aliases (ADR-021 transition) ----------------------------------------
 
@@ -351,171 +349,6 @@ class StudioApp:
 
     def play_timed(self, blocking: bool = False) -> None:
         self.trajectory.play_timed(blocking=blocking)
-
-    # ---- Clearance field (roadmap R3) --------------------------------------------------------
-
-    def _build_clearance_panel(self) -> None:
-        with self.server.gui.add_folder("Clearance"):
-            self.sdf_res = self.server.gui.add_number("SDF resolution (mm)", initial_value=10.0,
-                                                      min=2.0, max=100.0, step=1.0)
-            self.sdf_build_button = self.server.gui.add_button("Build clearance field")
-            self.sdf_status = self.server.gui.add_text("field", initial_value="—", disabled=True)
-            self.sdf_slice = self.server.gui.add_slider("slice height (z)", min=0.0, max=1.0,
-                                                        step=0.01, initial_value=0.5)
-            self.sdf_range = self.server.gui.add_number("color range ± (m)", initial_value=0.3,
-                                                        min=0.05, max=2.0, step=0.05)
-        self._clearance_field = None
-        self._slice_node = None
-        self.sdf_build_button.on_click(lambda _e: self._on_build_clearance())
-        self.sdf_slice.on_update(lambda _e: self._draw_clearance_slice())
-        self.sdf_range.on_update(lambda _e: self._draw_clearance_slice())
-
-    def build_clearance_now(self) -> None:
-        """Synchronous build + slice — the headless smoke-test entry point."""
-        self._on_build_clearance()
-
-    def _on_build_clearance(self) -> None:
-        if not self.session.obstacles:
-            self.sdf_status.value = "no obstacles — add environment first"
-            return
-        opts = q.ClearanceFieldOptions()
-        opts.resolution = float(self.sdf_res.value) * 1e-3
-        try:
-            with self._ui_lock:
-                self._clearance_field = q.ClearanceField.build(self.session.environment(), opts)
-        except RuntimeError as error:
-            self.sdf_status.value = f"FAILED: {error}"
-            return
-        f = self._clearance_field
-        nx, ny, nz = int(f.dims[0]), int(f.dims[1]), int(f.dims[2])
-        self.sdf_status.value = (
-            f"{nx}×{ny}×{nz} vox · {f.build_seconds * 1e3:.0f} ms · "
-            f"{'GPU' if f.built_on_gpu else 'CPU'} JFA"
-        )
-        self._draw_clearance_slice()
-
-    def _draw_clearance_slice(self) -> None:
-        """One z-layer of the SDF as a colored point cloud: red = penetration/near, white = at
-        the color-range edge, blue = far. The slider maps [0, 1] onto the grid height."""
-        f = self._clearance_field
-        if f is None:
-            return
-        if self._slice_node is not None:
-            self._slice_node.remove()
-            self._slice_node = None
-        data = np.asarray(f.data)  # (nz, ny, nx) float32 view
-        nz = data.shape[0]
-        zi = min(int(float(self.sdf_slice.value) * (nz - 1)), nz - 1)
-        layer = data[zi]  # (ny, nx)
-        res = float(f.resolution)
-        origin = np.asarray(f.origin)
-
-        stride = max(1, int(np.ceil(np.sqrt(layer.size / 60000.0))))  # ≤ ~60k points
-        ys, xs = np.mgrid[0 : layer.shape[0] : stride, 0 : layer.shape[1] : stride]
-        d = layer[ys, xs].astype(np.float64).ravel()
-        points = np.stack(
-            [
-                origin[0] + xs.ravel() * res,
-                origin[1] + ys.ravel() * res,
-                np.full(d.shape, origin[2] + zi * res),
-            ],
-            axis=1,
-        )
-        rng = max(float(self.sdf_range.value), 1e-6)
-        t = np.clip(d / rng, -1.0, 1.0)
-        colors = np.empty((len(d), 3))
-        near = t < 0  # penetration → solid red fading to white at the surface
-        colors[near] = np.stack([np.ones(near.sum()), 1 + t[near], 1 + t[near]], axis=1)
-        colors[~near] = np.stack([1 - t[~near], 1 - t[~near], np.ones((~near).sum())], axis=1)
-        self._slice_node = self.server.scene.add_point_cloud(
-            "/clearance/slice", points=points, colors=colors, point_size=res * stride * 0.9,
-        )
-
-    # ---- PRM roadmap (multi-query — roadmap R5) ----------------------------------------------
-
-    def _build_roadmap_panel(self) -> None:
-        with self.server.gui.add_folder("Roadmap (PRM)"):
-            self.prm_nodes = self.server.gui.add_number(
-                "nodes", initial_value=1000, min=50, max=20000, step=50
-            )
-            self.prm_k = self.server.gui.add_number("k neighbours", initial_value=10, min=2,
-                                                    max=50, step=1)
-            self.prm_seed = self.server.gui.add_number("build seed", initial_value=0, min=0,
-                                                       max=2**31)
-            self.prm_smooth = self.server.gui.add_checkbox("smooth query path", initial_value=True)
-            self.prm_build_button = self.server.gui.add_button("Build roadmap")
-            self.prm_status = self.server.gui.add_text("roadmap", initial_value="—", disabled=True)
-            self.prm_query_button = self.server.gui.add_button("Query roadmap (start→goal)")
-            self.prm_query_status = self.server.gui.add_text("query", initial_value="—",
-                                                             disabled=True)
-        self.prm_build_button.on_click(lambda _e: self._on_build_roadmap())
-        self.prm_query_button.on_click(lambda _e: self._on_query_roadmap())
-
-    def _roadmap_build_kwargs(self) -> dict:
-        return dict(
-            num_nodes=int(self.prm_nodes.value),
-            k_neighbors=int(self.prm_k.value),
-            seed=int(self.prm_seed.value),
-            smooth=bool(self.prm_smooth.value),
-            force=True,
-        )
-
-    def _on_build_roadmap(self) -> None:
-        if self.session.is_planning:
-            return
-        self.session.planner_params.edge_resolution = float(self.edge_res.value)
-        self.session.planner_params.max_link_sweep = float(self.link_sweep.value) * 1e-3
-        self.prm_status.value = "building…"
-        self.prm_build_button.disabled = True
-        self.session.build_roadmap_async(self._on_roadmap_built, **self._roadmap_build_kwargs())
-
-    def _on_roadmap_built(self, stats) -> None:
-        try:
-            if stats is None:
-                self.prm_status.value = "FAILED — see server console"
-            else:
-                self.prm_status.value = (
-                    f"{stats.nodes} nodes · {stats.edges} edges · "
-                    f"{stats.collision_configs} configs · {stats.build_seconds * 1e3:.0f} ms"
-                )
-        finally:
-            self.prm_build_button.disabled = False
-
-    def build_roadmap_now(self):
-        """Synchronous build — the headless smoke-test entry point."""
-        stats = self.session.build_roadmap(**self._roadmap_build_kwargs())
-        self.prm_status.value = f"{stats.nodes} nodes · {stats.edges} edges"
-        return stats
-
-    def _on_query_roadmap(self) -> None:
-        if self.session.is_planning:
-            return
-        if self.session.goal is None:
-            self.prm_query_status.value = "set a goal first"
-            return
-        if not self.session.has_roadmap:
-            self.prm_query_status.value = "build the roadmap first"
-            return
-        self.session.timeout = float(self.timeout.value)
-        try:
-            attempt = self.session.plan_roadmap(seed=int(self.prm_seed.value) or None)
-        except Exception as error:  # noqa: BLE001
-            self.prm_query_status.value = f"FAILED: {error}"
-            return
-        self._show_attempt(attempt)
-        r = attempt.result
-        self.prm_query_status.value = (
-            f"{r.status} · {len(attempt.path)} wp · {r.stats.time_total * 1e3:.1f} ms"
-            if r.ok() else f"{r.status} · {r.message}"
-        )
-
-    def query_roadmap_now(self) -> Attempt:
-        """Synchronous build-if-needed + query — the headless smoke-test entry point."""
-        if not self.session.has_roadmap:
-            self.session.build_roadmap(**self._roadmap_build_kwargs())
-        attempt = self.session.plan_roadmap(seed=int(self.prm_seed.value) or None)
-        self._show_attempt(attempt)
-        return attempt
 
     # ---- Lifecycle -------------------------------------------------------------------------
 
