@@ -292,7 +292,7 @@ def app(session: StudioSession) -> StudioApp:
 def test_app_renders_robot(app: StudioApp) -> None:
     nodes = [n for link_nodes in app.robot_view.link_nodes.values() for n in link_nodes]
     assert len(nodes) > 0  # UR5 collision meshes resolved and added to the scene
-    assert len(app.sliders) == 6
+    assert len(app.scene.sliders) == 6
 
 
 def test_interactive_ik_is_stable(session: StudioSession) -> None:
@@ -308,21 +308,21 @@ def test_interactive_ik_is_stable(session: StudioSession) -> None:
 
 def test_app_parameterize_plots_and_timed_play(app: StudioApp) -> None:
     app.set_config(np.zeros(6))
-    app._set_start()
+    app.plan.set_start()
     app.set_config(GOAL)
-    app._set_goal()
+    app.plan.set_goal()
     assert app.plan_now(seed=13).result.ok()
-    app.traj_tip_speed.value = 0.6
-    app.traj_jerk.value = 60.0
+    app.trajectory.tip_speed.value = 0.6
+    app.trajectory.jerk.value = 60.0
     app.parametrize_now()
-    assert "s ·" in app.traj_status.value, app.traj_status.value
-    assert len(app._plot_handles) == 3  # joint vel, joint acc, tip speed
+    assert "s ·" in app.trajectory.status.value, app.trajectory.status.value
+    assert len(app.trajectory._plot_handles) == 3  # joint vel, joint acc, tip speed
 
     tj = app.session.trajectory
     assert tj is not None
-    app.time_scale.value = 10.0  # 10x real time keeps the test fast
+    app.trajectory.time_scale.value = 10.0  # 10x real time keeps the test fast
     app.play_timed(blocking=True)
-    assert not app._playing
+    assert not app.trajectory._playing
     assert np.allclose(app.session.q, tj.positions[-1], atol=1e-9)
 
 
@@ -353,18 +353,18 @@ def test_app_exploration_tree_view(app: StudioApp) -> None:
         assert placed, "could not stage a blocking obstacle on the swept arc"
 
         app.set_config(np.zeros(6))
-        app._set_start()
+        app.plan.set_start()
         app.set_config(GOAL)
-        app._set_goal()
-        app.show_tree.value = True
+        app.plan.set_goal()
+        app.plan.show_tree.value = True
         attempt = app.plan_now(seed=12)
         assert attempt.result.ok()
         assert len(attempt.result.trees) == 2
-        assert len(app._tree_nodes) > 0  # tree segments drawn
+        assert len(app.ctx.attempt_view._tree_nodes) > 0  # tree segments drawn
 
-        app.show_tree.value = False
+        app.plan.show_tree.value = False
         app.plan_now(seed=12)
-        assert len(app._tree_nodes) == 0  # cleared when not recorded
+        assert len(app.ctx.attempt_view._tree_nodes) == 0  # cleared when not recorded
     finally:
         drop_wall()
 
@@ -375,13 +375,13 @@ def test_app_clearance_heatmap(app: StudioApp) -> None:
         q.Transform.from_translation(np.array([0.6, 0.0, 0.4])),
     )
     try:
-        app.sdf_res.value = 25.0  # coarse: keep the smoke test fast
+        app.plan.sdf_res.value = 25.0  # coarse: keep the smoke test fast
         app.build_clearance_now()
-        assert "vox" in app.sdf_status.value, app.sdf_status.value
-        assert app._slice_node is not None
-        app.sdf_slice.value = 0.8  # re-slicing redraws without raising
-        app._draw_clearance_slice()
-        assert app._slice_node is not None
+        assert "vox" in app.plan.sdf_status.value, app.plan.sdf_status.value
+        assert app.plan._slice_node is not None
+        app.plan.sdf_slice.value = 0.8  # re-slicing redraws without raising
+        app.plan.draw_clearance_slice()
+        assert app.plan._slice_node is not None
     finally:
         app.session.remove_obstacle("sdf_probe")
         app.obstacle_view.remove("sdf_probe")
@@ -395,21 +395,21 @@ def test_app_refine(app: StudioApp) -> None:
     )
     try:
         app.set_config(np.zeros(6))
-        app._set_start()
+        app.plan.set_start()
         app.set_config(GOAL)
-        app._set_goal()
+        app.plan.set_goal()
         app.plan_now(seed=9)
 
-        app.refine_waypoints.value = 16
-        app.refine_iters.value = 20
+        app.trajectory.chomp.waypoints.value = 16
+        app.trajectory.chomp.iterations.value = 20
         # Refine's field resolution is its own knob now (ADR-021) — coarse keeps the test fast.
         app.trajectory.chomp.sdf_resolution.value = 30.0
         refined = app.refine_now()
         assert refined is app.session.attempts[-1]
-        assert app.refine_status.value != "—"
+        assert app.trajectory.refine_status.value != "—"
         if refined.result.ok():
             assert refined.result.stats.refiner_mode == "refiner"
-            assert len(app._path_nodes) > 0  # refined path drawn
+            assert len(app.ctx.attempt_view._path_nodes) > 0  # refined path drawn
     finally:
         app.session.remove_obstacle("refine_probe")
         app.obstacle_view.remove("refine_probe")
@@ -418,15 +418,15 @@ def test_app_refine(app: StudioApp) -> None:
 def test_app_roadmap(app: StudioApp) -> None:
     # R5 in the UI: Build roadmap, then Query roadmap (start→goal), drawing like a plan.
     app.set_config(np.zeros(6))
-    app._set_start()
+    app.plan.set_start()
     app.set_config(GOAL)
-    app._set_goal()
-    app.prm_nodes.value = 200
-    app.prm_k.value = 6
-    app.prm_seed.value = 1
+    app.plan.set_goal()
+    app.plan.prm_nodes.value = 200
+    app.plan.prm_k.value = 6
+    app.plan.prm_seed.value = 1
     stats = app.build_roadmap_now()
     assert stats.nodes > 0
-    assert app.prm_status.value != "—"
+    assert app.plan.prm_status.value != "—"
     attempt = app.query_roadmap_now()
     assert attempt is app.session.attempts[-1]
     app.session.goal = None
@@ -434,15 +434,15 @@ def test_app_roadmap(app: StudioApp) -> None:
 
 def test_app_ik_branch_picker(app: StudioApp) -> None:
     app.set_config(GOAL)
-    app._snap_gizmo()  # gizmo at a reachable pose (the current EE pose)
-    app._on_ik_branches()
-    assert len(app._ik_branches) >= 2
-    assert app.ik_branch_pick.options[0] != "—"
-    assert "branches" in app.ik_status.value
+    app.ik.snap_gizmo()  # gizmo at a reachable pose (the current EE pose)
+    app.ik.solve_branches()
+    assert len(app.ik.branches) >= 2
+    assert app.ik.branch_pick.options[0] != "—"
+    assert "branches" in app.ik.status.value
     # Picking the last branch applies its config to the robot.
-    app.ik_branch_pick.value = app.ik_branch_pick.options[-1]
-    app._on_ik_branch_pick()
-    assert np.allclose(app.session.q, app._ik_branches[-1].q)
+    app.ik.branch_pick.value = app.ik.branch_pick.options[-1]
+    app.ik.on_branch_pick()
+    assert np.allclose(app.session.q, app.ik.branches[-1].q)
 
 
 def test_sample_path_endpoints_and_density() -> None:
@@ -464,25 +464,25 @@ def test_app_obstacle_plan_and_scrub(app: StudioApp) -> None:
     assert not app.session.collision_state(np.zeros(6)).in_collision
     assert not app.session.collision_state(GOAL).in_collision
     app.set_config(np.zeros(6))
-    app._set_start()
+    app.plan.set_start()
     app.set_config(GOAL)
-    app._set_goal()
+    app.plan.set_goal()
 
     attempt = app.plan_now(seed=2)
     assert attempt.result.ok(), attempt.result.message
-    assert len(app._path_nodes) > 0  # the path IS drawn
+    assert len(app.ctx.attempt_view._path_nodes) > 0  # the path IS drawn
 
-    app.scrub.value = 0.5
-    app._on_scrub()  # animates the robot to mid-path without raising
+    app.trajectory.scrub.value = 0.5
+    app.trajectory._on_scrub()  # animates the robot to mid-path without raising
     assert app.session.q.shape == (6,)
 
 
 def test_app_play_animates_to_the_end(app: StudioApp) -> None:
-    assert app._last_attempt is not None  # planned by the previous test (same module fixture)
-    app.scrub.value = 0.0
+    assert app.ctx.last_attempt is not None  # planned by the previous test (same module fixture)
+    app.trajectory.scrub.value = 0.0
     app.play(blocking=True, duration=0.3)
-    assert app.scrub.value == 1.0
-    assert not app._playing
+    assert app.trajectory.scrub.value == 1.0
+    assert not app.trajectory._playing
 
 
 def test_session_v2_round_trips_the_whole_problem(tmp_path: Path, session: StudioSession) -> None:
@@ -509,6 +509,81 @@ def test_session_v2_round_trips_the_whole_problem(tmp_path: Path, session: Studi
     session.smooth = True
 
 
+def test_app_mode_switching_visibility(app: StudioApp) -> None:
+    # ADR-021: one mode's folder (and its scene nodes) at a time; the gizmo belongs to IK.
+    app._set_mode("ik")
+    assert app.ik.folder.visible
+    assert not app.plan.folder.visible and not app.scene.folder.visible
+    assert app.ctx.ik_gizmo.visible
+    assert not app.ctx.attempt_view._path_visible  # path is a plan/trajectory view
+
+    app._set_mode("plan")
+    assert app.plan.folder.visible and not app.ik.folder.visible
+    assert not app.ctx.ik_gizmo.visible  # hidden, but its pose still feeds "goal = IK gizmo"
+    assert app.ctx.attempt_view._path_visible and app.ctx.attempt_view._trees_visible
+
+    app._set_mode("scene")
+    assert app.scene.folder.visible
+    assert not app.ctx.attempt_view._trees_visible
+
+
+def test_app_stale_roadmap_indicator(app: StudioApp) -> None:
+    app.plan.prm_nodes.value = 100
+    app.plan.prm_k.value = 6
+    app.build_roadmap_now()
+    assert app.session.has_roadmap
+    app.add_obstacle(
+        "stale_probe", q.SphereShape(0.05),
+        q.Transform.from_translation(np.array([2.0, 2.0, 2.0])),
+    )
+    try:
+        assert not app.session.has_roadmap  # obstacle edit invalidated the cache...
+        assert app.plan.prm_status.value.endswith("STALE (obstacles changed)")  # ...and the UI says so
+    finally:
+        app.session.remove_obstacle("stale_probe")
+        app.obstacle_view.remove("stale_probe")
+
+
+def test_app_plan_dispatch_chomp_standalone(app: StudioApp) -> None:
+    # The Plan button runs the picked planner: CHOMP (standalone) optimizes a straight line.
+    app.add_obstacle(
+        "chomp_probe", q.SphereShape(0.05),
+        q.Transform.from_translation(np.array([0.8, 0.8, 0.1])),
+    )
+    try:
+        app.set_config(np.zeros(6))
+        app.plan.set_start()
+        app.set_config(GOAL)
+        app.plan.set_goal()
+        app.plan.planner_pick.value = "CHOMP (standalone)"
+        assert app.plan.chomp_folder.visible  # the dropdown reveals the planner's section
+        app.plan.chomp.waypoints.value = 16
+        app.plan.chomp.iterations.value = 20
+        app.plan.chomp.sdf_resolution.value = 30.0  # coarse field: keep the smoke test fast
+        before = len(app.session.attempts)
+        app.plan._on_plan_clicked()  # async dispatch → wait for the worker
+        app.session._plan_thread.join(timeout=60.0)
+        assert len(app.session.attempts) == before + 1
+        assert app.session.attempts[-1].result.stats.refiner_mode == "standalone"
+        assert app.plan.status.value != "—"
+    finally:
+        app.plan.planner_pick.value = "RRT-Connect"
+        app.session.remove_obstacle("chomp_probe")
+        app.obstacle_view.remove("chomp_probe")
+        app.session.goal = None
+
+
+def test_app_load_session_preserves_mode(tmp_path: Path, app: StudioApp) -> None:
+    app._set_mode("trajectory")
+    file = str(tmp_path / "mode_keep.qmps")
+    app.session_path.value = file
+    app._on_save_session()
+    assert "saved" in app.session_status.value
+    app.load_session(file)
+    assert app._current_mode == "trajectory"
+    assert app.trajectory.folder.visible and not app.scene.folder.visible
+
+
 def test_app_save_load_rebuilds_ui(tmp_path: Path, app: StudioApp) -> None:
     # The in-UI benchmark loop: configure -> save -> load -> everything is back on screen.
     app.add_obstacle(
@@ -517,15 +592,15 @@ def test_app_save_load_rebuilds_ui(tmp_path: Path, app: StudioApp) -> None:
     )
     app.set_config(GOAL)
     assert not app.session.collision_state(GOAL).in_collision
-    app._set_start()
-    app._set_goal()
+    app.plan.set_start()
+    app.plan.set_goal()
     file = str(tmp_path / "bench_ui.qmps")
     app.session_path.value = file
     app._on_save_session()
     assert "saved" in app.session_status.value
 
     app.load_session(file)
-    assert len(app.sliders) == 6  # UI rebuilt
+    assert len(app.scene.sliders) == 6  # UI rebuilt
     assert "bench_box" in app.session.obstacles  # collision state restored...
     assert "bench_box" in app.obstacle_view.nodes  # ...and rendered
     assert app.session.goal is not None and app.session.goal.kind == "joint"

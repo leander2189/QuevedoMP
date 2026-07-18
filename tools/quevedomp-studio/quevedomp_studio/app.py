@@ -1,14 +1,17 @@
-"""The studio UI: viser widgets over a StudioSession.
+"""The studio UI: a viser server + working modes over a StudioSession (ADR-021).
 
-Flow: joint sliders / IK gizmo edit the config (FK + collision tint update live) -> Set start /
-Set goal capture configurations -> Plan runs on a worker thread (the bindings drop the GIL) ->
-the result draws as an end-effector trace plus a scrub slider that animates the robot along
-the (smoothed) path.
+Five modes — Scene (pose robot, edit obstacles), IK (gizmo/solve/branches), Plan (pick a
+planner, plan, debug with trees + clearance heatmap), Trajectory (parameterize, polish,
+play back), Tasks (MTC-lite inspector, R7 placeholder). Only the Session panel and the
+mode switcher are always visible; the switcher toggles each mode's folder and scene nodes.
+
+Shared state lives on StudioContext (context.py); the modes are in modes/. This class
+keeps the server lifecycle, the Session panel, the switcher, and the headless synchronous
+entry points the smoke tests drive (plan_now, refine_now, ...).
 """
 
 from __future__ import annotations
 
-import threading
 import time
 from typing import Optional
 
@@ -16,15 +19,19 @@ import numpy as np
 import viser
 
 from .context import StudioContext
-from .modes import IkMode, PlanMode, SceneMode, TrajectoryMode
+from .modes import IkMode, PlanMode, SceneMode, TasksMode, TrajectoryMode
 from .robot_view import ObstacleView, RobotView
 from .session import Attempt, StudioSession
+
+MODE_LABELS = {"scene": "Scene", "ik": "IK", "plan": "Plan",
+               "trajectory": "Trajectory", "tasks": "Tasks"}
 
 
 class StudioApp:
     def __init__(self, session: StudioSession, host: str = "0.0.0.0", port: int = 8080) -> None:
         self.session = session
         self.server = viser.ViserServer(host=host, port=port, label="quevedomp-studio")
+        self._current_mode = "scene"
         self._mount()
 
     def _mount(self) -> None:
@@ -34,6 +41,12 @@ class StudioApp:
         self.ctx = StudioContext(self.session, self.server, self.robot_view, self.obstacle_view)
 
         self._build_session_panel()
+        # The switcher widget is created before the mode folders so it sits above them; its
+        # handler is wired after the modes exist.
+        self._mode_switcher = self.server.gui.add_button_group(
+            "mode", options=tuple(MODE_LABELS.values())
+        )
+
         self.scene = SceneMode(self.ctx)
         self.scene.build()  # renders any loaded obstacles too
         self.ik = IkMode(self.ctx)
@@ -42,10 +55,32 @@ class StudioApp:
         self.plan.build()
         self.trajectory = TrajectoryMode(self.ctx)
         self.trajectory.build()
-        self._modes = [self.scene, self.ik, self.plan, self.trajectory]
+        self.tasks = TasksMode(self.ctx)
+        self.tasks.build()
+        self._modes = [self.scene, self.ik, self.plan, self.trajectory, self.tasks]
+
+        self._mode_switcher.on_click(lambda _e: self._on_mode_clicked())
+        self._set_mode(self._current_mode)  # survives load_session remounts
 
         self.set_config(self.session.q)  # syncs sliders + collision tint
         self._restore_plan_markers()
+
+    # ---- mode switching ----------------------------------------------------------------------
+
+    def _on_mode_clicked(self) -> None:
+        label = self._mode_switcher.value
+        self._set_mode(next(k for k, v in MODE_LABELS.items() if v == label))
+
+    def _set_mode(self, key: str) -> None:
+        """THE visibility policy, kept in one place so a later swap to a viser tab group (if a
+        tab-change event ever lands) stays a local change (ADR-021)."""
+        self._current_mode = key
+        for mode in self._modes:
+            mode.set_active(mode.name == key)
+        # The planned path is a result view: shown while planning or working on trajectories.
+        self.ctx.attempt_view.set_path_visible(key in ("plan", "trajectory"))
+
+    # ---- session panel + lifecycle -----------------------------------------------------------
 
     def load_session(self, path: str) -> None:
         """Swap in a saved session: tear down every scene node + GUI panel and remount."""
@@ -54,7 +89,7 @@ class StudioApp:
         new_session = StudioSession.load(path)
         for mode in getattr(self, "_modes", []):
             mode.shutdown()  # stop playback threads before the gui/scene reset
-        with self._ui_lock:
+        with self.ctx.ui_lock:
             self.session = new_session
             self.server.scene.reset()
             self.server.gui.reset()
@@ -73,34 +108,6 @@ class StudioApp:
             self.ctx.ik_gizmo.wxyz = goal.pose.quaternion()
             view.set_goal_marker_point(goal.pose.translation())
 
-    # ---- Shared-state aliases (ADR-021 transition: the modes read ctx directly) --------------
-
-    @property
-    def _ui_lock(self) -> threading.Lock:
-        return self.ctx.ui_lock
-
-    @property
-    def ik_gizmo(self):
-        return self.ctx.ik_gizmo
-
-    @property
-    def _last_attempt(self) -> Optional[Attempt]:
-        return self.ctx.last_attempt
-
-    @_last_attempt.setter
-    def _last_attempt(self, attempt: Optional[Attempt]) -> None:
-        self.ctx.last_attempt = attempt
-
-    @property
-    def _path_nodes(self) -> list:
-        return self.ctx.attempt_view._path_nodes
-
-    @property
-    def _tree_nodes(self) -> list:
-        return self.ctx.attempt_view._tree_nodes
-
-    # ---- Session panel -----------------------------------------------------------------------
-
     def _build_session_panel(self) -> None:
         with self.server.gui.add_folder("Session"):
             self.session_path = self.server.gui.add_text("file", initial_value="sessions/scene.qmps")
@@ -113,10 +120,10 @@ class StudioApp:
 
     def _on_save_session(self) -> None:
         # Pull the live widget values into the session so the file captures what's on screen.
-        self.session.timeout = float(self.timeout.value)
-        self.session.smooth = bool(self.do_smooth.value)
-        self.session.planner_params.edge_resolution = float(self.edge_res.value)
-        self.session.planner_params.max_link_sweep = float(self.link_sweep.value) * 1e-3
+        self.session.timeout = float(self.plan.timeout.value)
+        self.session.smooth = bool(self.plan.do_smooth.value)
+        self.session.planner_params.edge_resolution = float(self.plan.edge_res.value)
+        self.session.planner_params.max_link_sweep = float(self.plan.link_sweep.value) * 1e-3
         try:
             self.session.save(self.session_path.value.strip())
             self.session_status.value = f"saved {self.session_path.value.strip()}"
@@ -134,29 +141,7 @@ class StudioApp:
         self.session_path.value = path
         self.session_status.value = f"loaded {path}"
 
-    # ---- Scene-mode aliases (ADR-021 transition) ---------------------------------------------
-
-    @property
-    def sliders(self) -> list:
-        return self.scene.sliders
-
-    @property
-    def status(self):
-        return self.scene.status
-
-    @property
-    def obstacle_status(self):
-        return self.scene.obstacle_status
-
-    @property
-    def obstacle_pick(self):
-        return self.scene.obstacle_pick
-
-    def add_obstacle(self, oid: str, geometry, pose) -> None:
-        self.scene.add_obstacle(oid, geometry, pose)
-
-    def _sync_obstacle_pick(self) -> None:
-        self.scene._sync_obstacle_pick()
+    # ---- headless entry points (the documented scripting/test surface) -----------------------
 
     def set_config(self, q_new: np.ndarray) -> None:
         """Set config from code (IK / scrub / play): session + slider sync + robot refresh."""
@@ -165,192 +150,38 @@ class StudioApp:
     def refresh(self) -> None:
         self.ctx.refresh()
 
-    # ---- IK-mode aliases (ADR-021 transition) ------------------------------------------------
-
-    @property
-    def ik_link(self):
-        return self.ik.link
-
-    @property
-    def ik_status(self):
-        return self.ik.status
-
-    @property
-    def ik_branch_pick(self):
-        return self.ik.branch_pick
-
-    @property
-    def _ik_branches(self) -> list:
-        return self.ik.branches
-
-    def _snap_gizmo(self) -> None:
-        self.ik.snap_gizmo()
-
-    def _on_ik_branches(self) -> None:
-        self.ik.solve_branches()
-
-    def _on_ik_branch_pick(self) -> None:
-        self.ik.on_branch_pick()
-
-    # ---- Plan-mode aliases (ADR-021 transition) ----------------------------------------------
-
-    @property
-    def use_ik_goal(self):
-        return self.plan.use_ik_goal
-
-    @property
-    def timeout(self):
-        return self.plan.timeout
-
-    @property
-    def seed(self):
-        return self.plan.seed
-
-    @property
-    def edge_res(self):
-        return self.plan.edge_res
-
-    @property
-    def link_sweep(self):
-        return self.plan.link_sweep
-
-    @property
-    def do_smooth(self):
-        return self.plan.do_smooth
-
-    @property
-    def show_tree(self):
-        return self.plan.show_tree
-
-    @property
-    def plan_status(self):
-        return self.plan.status
-
-    @property
-    def prm_nodes(self):
-        return self.plan.prm_nodes
-
-    @property
-    def prm_k(self):
-        return self.plan.prm_k
-
-    @property
-    def prm_seed(self):
-        return self.plan.prm_seed
-
-    @property
-    def prm_status(self):
-        return self.plan.prm_status
-
-    @property
-    def sdf_res(self):
-        return self.plan.sdf_res
-
-    @property
-    def sdf_status(self):
-        return self.plan.sdf_status
-
-    @property
-    def sdf_slice(self):
-        return self.plan.sdf_slice
-
-    @property
-    def _slice_node(self):
-        return self.plan._slice_node
-
-    def _set_start(self) -> None:
-        self.plan.set_start()
-
-    def _set_goal(self) -> None:
-        self.plan.set_goal()
+    def add_obstacle(self, oid: str, geometry, pose) -> None:
+        self.scene.add_obstacle(oid, geometry, pose)
 
     def plan_now(self, seed: Optional[int] = None) -> Attempt:
-        """Synchronous plan + display — the headless smoke-test entry point."""
+        """Synchronous RRT plan + display."""
         return self.plan.plan_now(seed)
 
-    def build_clearance_now(self) -> None:
-        """Synchronous clearance-field build + slice — the headless smoke-test entry point."""
-        self.plan.build_clearance_now()
-
-    def _draw_clearance_slice(self) -> None:
-        self.plan.draw_clearance_slice()
-
-    def build_roadmap_now(self):
-        """Synchronous roadmap build — the headless smoke-test entry point."""
-        return self.plan.build_roadmap_now()
-
-    def query_roadmap_now(self) -> Attempt:
-        """Synchronous roadmap build-if-needed + query — the headless smoke-test entry point."""
-        return self.plan.query_roadmap_now()
-
-    # ---- Trajectory-mode aliases (ADR-021 transition) ----------------------------------------
-
-    @property
-    def traj_accel(self):
-        return self.trajectory.accel
-
-    @property
-    def traj_tip_speed(self):
-        return self.trajectory.tip_speed
-
-    @property
-    def traj_tip_accel(self):
-        return self.trajectory.tip_accel
-
-    @property
-    def traj_jerk(self):
-        return self.trajectory.jerk
-
-    @property
-    def traj_status(self):
-        return self.trajectory.status
-
-    @property
-    def time_scale(self):
-        return self.trajectory.time_scale
-
-    @property
-    def scrub(self):
-        return self.trajectory.scrub
-
-    @property
-    def _plot_handles(self) -> list:
-        return self.trajectory._plot_handles
-
-    @property
-    def _playing(self) -> bool:
-        return self.trajectory._playing
-
-    @property
-    def refine_waypoints(self):
-        return self.trajectory.chomp.waypoints
-
-    @property
-    def refine_iters(self):
-        return self.trajectory.chomp.iterations
-
-    @property
-    def refine_status(self):
-        return self.trajectory.refine_status
-
     def parametrize_now(self) -> None:
-        """Synchronous parameterize + plots — the headless smoke-test entry point."""
+        """Synchronous parameterize + plots."""
         self.trajectory.parametrize()
 
     def refine_now(self) -> Attempt:
-        """Synchronous CHOMP polish of the last plan — the headless smoke-test entry point."""
+        """Synchronous CHOMP polish of the last plan."""
         return self.trajectory.refine_now()
 
-    def _on_scrub(self) -> None:
-        self.trajectory._on_scrub()
+    def build_clearance_now(self) -> None:
+        """Synchronous clearance-field build + heatmap slice."""
+        self.plan.build_clearance_now()
+
+    def build_roadmap_now(self):
+        """Synchronous PRM roadmap build."""
+        return self.plan.build_roadmap_now()
+
+    def query_roadmap_now(self) -> Attempt:
+        """Synchronous PRM build-if-needed + query."""
+        return self.plan.query_roadmap_now()
 
     def play(self, blocking: bool = False, duration: Optional[float] = None) -> None:
         self.trajectory.play(blocking=blocking, duration=duration)
 
     def play_timed(self, blocking: bool = False) -> None:
         self.trajectory.play_timed(blocking=blocking)
-
-    # ---- Lifecycle -------------------------------------------------------------------------
 
     def serve_forever(self) -> None:
         print(f"quevedomp-studio running — open http://localhost:{self.server.get_port()}")

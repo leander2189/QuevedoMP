@@ -4,6 +4,7 @@ from .base import Mode
 from .ik import IkMode
 from .plan import PlanMode
 from .scene import SceneMode
+from .tasks import TasksMode
 from .trajectory import TrajectoryMode
 
-__all__ = ["Mode", "IkMode", "PlanMode", "SceneMode", "TrajectoryMode"]
+__all__ = ["Mode", "IkMode", "PlanMode", "SceneMode", "TasksMode", "TrajectoryMode"]
