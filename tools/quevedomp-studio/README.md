@@ -1,8 +1,8 @@
 # quevedomp-studio
 
-Interactive Motion Planning IDE for QuevedoMP (ADR-016, Task 4a.6). Pure Python, outside the
-C++ build: **viser** serves the 3D editor (joint sliders, IK drag gizmo, obstacle gizmos,
-Plan + scrub), **rerun** optionally records every planning attempt with its `PlanningStats`.
+Interactive Motion Planning IDE for QuevedoMP (ADR-016, Task 4a.6; working modes per ADR-021).
+Pure Python, outside the C++ build: **viser** serves the 3D editor, **rerun** optionally records
+every planning attempt with its `PlanningStats`.
 
 ## Running (dev container)
 
@@ -26,48 +26,45 @@ DTC cells, the SRDF-derived ACM) wired automatically; for any other robot pass `
 `--package-dir PKG=DIR` (repeatable) / `--base-dir` / `--srdf`, exactly like the C++
 `MeshSources` + DTC harness.
 
-## Workflow
+## Working modes (ADR-021)
 
-1. **Pose** the robot with the joint sliders, or drag the **IK gizmo** (the selected leaf link
-   follows; the status line shows convergence and the robot tints red on collision, witness
-   pair named).
-2. **Obstacles**: add box/sphere/cylinder, drag them with their gizmos; collision state updates
-   live (`CollisionScene.add/move/remove_object` under the hood — no scene rebuild).
-3. **Plan**: capture *Set start* / *Set goal* (joint-space, or check *goal = IK gizmo pose* for
-   a `PoseGoal`), pick timeout/seed/smoothing, hit **Plan**. Planning runs on a worker thread —
-   the bindings release the GIL, so the UI stays live. The result draws as the end-effector
-   trace; **scrub** animates the robot along the path. *max link sweep* (mm, Task 3.3d P3)
-   switches edge checking to a workspace-stated guarantee — no point of the robot moves more
-   than that between collision samples — overriding the per-joint *edge check step* when > 0.
-4. **Trajectory** (roadmap R2): after a plan, set the accel / tip-speed / tip-accel / jerk caps
-   and hit **Parameterize** — the (smoothed) path is spline-fitted, re-validated against the
-   scene, and time-parameterized (Task 3.4; jerk-certified when a jerk cap is set). **▶ Play
-   (timed)** animates the robot in real time (× time scale) with the actual velocity profile,
-   and the *Plots* folder charts joint velocity/acceleration and tip speed over time. In the
-   *Planning* panel, *record exploration tree* snapshots the RRT trees at plan exit and draws
-   them as end-effector line clouds (start tree blue, goal tree orange).
-5. **Clearance** (roadmap R3): *Build clearance field* voxelizes the current obstacles into a
-   signed-distance field (GPU jump-flooding when a device is present — the status line says
-   which path ran); the *slice height* slider sweeps a heatmap layer through the scene
-   (red = penetration/near, blue = far). Non-watertight meshes contribute unsigned distance
-   only (ADR-012/ADR-018).
-   The **Refine (CHOMP)** panel (roadmap R4, ADR-019) runs the CHOMP/TrajOpt refiner over the
-   clearance field to polish the last plan (or a straight-line guess with *standalone*) toward
-   smoother, higher-clearance motion — clearance/smoothness weights, ε, iterations and waypoints
-   are knobs; the field resolution is shared with the *SDF resolution* control above. The output is
-   certified collision-free by the exact backend and recorded as a new attempt, so the scrub,
-   *Play*, plots and *Parameterize* apply to it unchanged (headless equivalent:
-   `StudioSession.refine()`).
-   The **Roadmap (PRM)** panel (roadmap R5, ADR-020) is the multi-query planner: *Build roadmap*
-   samples + validates a per-cell roadmap once (nodes/edges/configs/time shown), then *Query
-   roadmap* answers the current start→goal by graph search + smoothing — cheap and repeatable while
-   the scene is unchanged (the roadmap is invalidated when an obstacle moves). Headless equivalents:
-   `StudioSession.build_roadmap()` / `plan_roadmap()`.
-6. **Sessions**: the *Session* panel saves/loads the whole problem setup — robot + ACM and
-   obstacles (Task 2a.5 serializer blobs, the same format Phase 3b capture bundles will carry)
-   plus start/goal, timeout, edge step, and planner settings — so a benchmark problem is one
-   *Load* away. Paths resolve inside the container (e.g. `sessions/scene.qmps` lands in the
-   repo, next to where `--load` picks it up at launch).
+The sidebar is modal: the **mode** button group switches between five working contexts, and only
+the *Session* panel stays global. Each mode also controls what the 3D view emphasizes.
+
+- **Scene** — pose the robot with the joint sliders (collision status + witness pair live) and
+  edit obstacles: add box/sphere/cylinder or a mesh file, drag them with their gizmos
+  (`CollisionScene.add/move/remove_object` under the hood — no scene rebuild). Robot and
+  obstacles stay visible in every mode; only the panel is modal.
+- **IK** — drag the gizmo (the selected link tracks; seeded, no branch-hopping), *Solve (global,
+  multi-restart)* for an explicit branch switch, or *Solve branches* to enumerate distinct IK
+  branches and pick one (free/COLLIDES marked). The *link* dropdown here selects the
+  end-effector link every other mode uses for markers, traces, and tip plots.
+- **Plan** — the planners are peers behind one **Plan** button: pick *RRT-Connect*, *PRM
+  roadmap* (R5, ADR-020: *Build roadmap* once — nodes/edges/configs/time shown — then Plan
+  queries it in ms while the scene is unchanged), or *CHOMP (standalone)* (R4, ADR-019:
+  optimizes a straight line to the goal, exact-backend certified). Set start/goal (joint-space,
+  or *goal = IK gizmo pose*), timeout/seed/smoothing; *max link sweep* (mm, Task 3.3d P3) gives
+  the workspace-bounded edge guarantee. Debug views live here: *record exploration tree* draws
+  the RRT trees as EE line clouds (R2), and *Debug: clearance heatmap* (R3) builds the voxel SDF
+  (GPU JFA when present) and sweeps a slice heatmap. Obstacle edits mark built roadmap/field
+  status lines **STALE**.
+- **Trajectory** — after a plan: set accel / tip-speed / tip-accel / jerk caps and
+  **Parameterize** (Task 3.4; jerk-certified when capped); *Refine (CHOMP polish)* runs the R4
+  refiner over the last plan with its own knob set (never worse than its re-certified seed);
+  playback = **scrub**, **▶ Play** (constant rate), **▶ Play (timed)** (real time × scale); the
+  *Plots* folder charts joint velocity/acceleration and tip speed.
+- **Tasks (MTC)** — placeholder; becomes the `quevedomp_tasks` inspector/runner with roadmap R7.
+
+**Sessions** (global): saves/loads the whole problem setup — robot + ACM and obstacles (Task
+2a.5 serializer blobs) plus start/goal, timeout, edge step, and planner settings — so a
+benchmark problem is one *Load* away. Per-mode knob values (CHOMP weights, PRM sizes, caps) are
+not persisted. Paths resolve inside the container (e.g. `sessions/scene.qmps` lands in the repo,
+next to where `--load` picks it up at launch).
+
+Headless equivalents for scripting/tests live on `StudioApp` (`plan_now`, `parametrize_now`,
+`refine_now`, `build_clearance_now`, `build_roadmap_now`, `query_roadmap_now`, `play`,
+`play_timed`) and `StudioSession` (`plan`, `refine`, `build_roadmap`/`plan_roadmap`,
+`parametrize`).
 
 ## Headless smoke test
 
