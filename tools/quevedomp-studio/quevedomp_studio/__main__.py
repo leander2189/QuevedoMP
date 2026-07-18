@@ -81,7 +81,7 @@ def main() -> None:
     if args.rerun_save:
         from .rerun_log import RerunLogger
 
-        RerunLogger(session, args.rerun_save, ee_link=app.ik_link.value)
+        RerunLogger(session, args.rerun_save, ee_link=app.ctx.ee_link)
     app.serve_forever()
 
 

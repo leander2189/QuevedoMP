@@ -18,7 +18,7 @@ import viser
 import quevedomp as q
 
 from .context import StudioContext
-from .modes import SceneMode
+from .modes import IkMode, SceneMode
 from .robot_view import ObstacleView, RobotView
 from .session import Attempt, StudioSession
 
@@ -42,7 +42,8 @@ class StudioApp:
         self._build_session_panel()
         self.scene = SceneMode(self.ctx)
         self.scene.build()  # renders any loaded obstacles too
-        self._build_ik_panel()
+        self.ik = IkMode(self.ctx)
+        self.ik.build()
         self._build_planning_panel()
         self._build_trajectory_panel()
         self._build_clearance_panel()
@@ -169,114 +170,32 @@ class StudioApp:
     def refresh(self) -> None:
         self.ctx.refresh()
 
-    # ---- IK panel --------------------------------------------------------------------------
+    # ---- IK-mode aliases (ADR-021 transition) ------------------------------------------------
 
-    def _build_ik_panel(self) -> None:
-        links = self.session.ik_links() or self.session.leaf_links() or [self.session.model.root_link]
-        with self.server.gui.add_folder("IK"):
-            self.ik_link = self.server.gui.add_dropdown("link", options=tuple(links),
-                                                        initial_value=links[0])
-            self.ik_status = self.server.gui.add_text("ik", initial_value="—", disabled=True)
-            snap = self.server.gui.add_button("Snap gizmo to link")
-            solve_global = self.server.gui.add_button("Solve (global, multi-restart)")
-            self.ik_branch_count = self.server.gui.add_number("branches to find", initial_value=8,
-                                                              min=2, max=20, step=1)
-            solve_branches = self.server.gui.add_button("Solve branches")
-            self.ik_branch_pick = self.server.gui.add_dropdown("branch", options=("—",),
-                                                               initial_value="—")
+    @property
+    def ik_link(self):
+        return self.ik.link
 
-        self._ik_busy = False
-        self._ik_branches: list = []
-        self._snap_gizmo()
+    @property
+    def ik_status(self):
+        return self.ik.status
 
-        snap.on_click(lambda _e: self._snap_gizmo())
-        solve_global.on_click(lambda _e: self._on_ik_solve(interactive=False))
-        solve_branches.on_click(lambda _e: self._on_ik_branches())
-        self.ik_branch_pick.on_update(lambda _e: self._on_ik_branch_pick())
-        self.ctx.ik_gizmo.on_update(lambda _e: self._on_ik_gizmo())
-        self.ik_link.on_update(lambda _e: self._on_ik_link())
+    @property
+    def ik_branch_pick(self):
+        return self.ik.branch_pick
 
-    def _on_ik_link(self) -> None:
-        self.ctx.ee_link = self.ik_link.value  # the one place the shared EE link is written
-        self._snap_gizmo()
+    @property
+    def _ik_branches(self) -> list:
+        return self.ik.branches
 
     def _snap_gizmo(self) -> None:
-        pose = q.fk(self.session.model, self.session.q, self.ik_link.value)
-        self.ik_gizmo.position = pose.translation()
-        self.ik_gizmo.wxyz = pose.quaternion()
+        self.ik.snap_gizmo()
 
     def _on_ik_branches(self) -> None:
-        """Solve N distinct branches for the gizmo pose and fill the picker (free ones marked)."""
-        if self._ik_busy:
-            return
-        self._ik_busy = True
-        try:
-            target = q.Transform.from_parts(
-                np.asarray(self.ik_gizmo.position), np.asarray(self.ik_gizmo.wxyz)
-            )
-            with self._ui_lock:
-                self._ik_branches = self.session.solve_ik_branches(
-                    self.ik_link.value, target, n=int(self.ik_branch_count.value)
-                )
-            if not self._ik_branches:
-                self.ik_branch_pick.options = ("—",)
-                self.ik_status.value = "no branches found (out of reach?)"
-                return
-            free = sum(b.free for b in self._ik_branches)
-            # Label = index · collision state · joint-space distance from the current config
-            # (the default ordering, nearest first).
-            here = self.session.q
-            options = tuple(
-                f"{i + 1}: {'free' if b.free else 'COLLIDES'} · Δ{np.linalg.norm(b.q - here):.2f}"
-                for i, b in enumerate(self._ik_branches)
-            )
-            self.ik_branch_pick.options = options
-            self.ik_branch_pick.value = options[0]
-            self.ik_status.value = f"{len(self._ik_branches)} branches · {free} collision-free"
-            self._apply_branch(0)
-        finally:
-            self._ik_busy = False
+        self.ik.solve_branches()
 
     def _on_ik_branch_pick(self) -> None:
-        label = self.ik_branch_pick.value
-        if not self._ik_branches or label == "—":
-            return
-        self._apply_branch(int(label.split(":", 1)[0]) - 1)
-
-    def _apply_branch(self, index: int) -> None:
-        if 0 <= index < len(self._ik_branches):
-            self.set_config(self._ik_branches[index].q)
-
-    def _on_ik_gizmo(self) -> None:
-        # Drop events that arrive while a solve is running (a drag emits dozens); the next
-        # event re-solves from the latest gizmo pose, so tracking never falls behind.
-        if self._ik_busy:
-            return
-        self._on_ik_solve(interactive=True)
-
-    def _on_ik_solve(self, interactive: bool) -> None:
-        self._ik_busy = True
-        try:
-            target = q.Transform.from_parts(
-                np.asarray(self.ik_gizmo.position), np.asarray(self.ik_gizmo.wxyz)
-            )
-            with self._ui_lock:
-                result = self.session.solve_ik(self.ik_link.value, target,
-                                               interactive=interactive)
-            if result.success:
-                mode = "track" if interactive else "global"
-                self.ik_status.value = (
-                    f"{mode} ok · {result.iterations} iters · pos {result.pos_error * 1e3:.2f} mm"
-                )
-                self.set_config(result.q)
-            elif interactive:
-                # Tracking failure = out of reach from the current branch: hold the pose
-                # instead of teleporting; "Solve (global)" is the explicit branch switch.
-                self.ik_status.value = f"out of reach · pos {result.pos_error * 1e3:.1f} mm"
-            else:
-                self.ik_status.value = f"global FAILED · pos {result.pos_error * 1e3:.1f} mm"
-        finally:
-            self._ik_busy = False
+        self.ik.on_branch_pick()
 
     # ---- Planning --------------------------------------------------------------------------
 
