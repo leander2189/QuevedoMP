@@ -17,13 +17,10 @@ import viser
 
 import quevedomp as q
 
+from .context import StudioContext
 from .robot_view import ObstacleView, RobotView
 from .session import Attempt, StudioSession
 
-PATH_COLOR = (80, 140, 240)
-START_COLOR = (80, 200, 80)
-GOAL_COLOR = (80, 120, 240)
-TREE_COLORS = ((110, 170, 255), (255, 170, 90))  # start tree, goal tree (R2 exploration view)
 PLOT_PALETTE = ("#e41a1c", "#377eb8", "#4daf4a", "#984ea3", "#ff7f00", "#a65628", "#f781bf")
 
 
@@ -31,17 +28,13 @@ class StudioApp:
     def __init__(self, session: StudioSession, host: str = "0.0.0.0", port: int = 8080) -> None:
         self.session = session
         self.server = viser.ViserServer(host=host, port=port, label="quevedomp-studio")
-        # viser callbacks can run concurrently; the session's UI workspace is one-per-thread
-        # (ADR-005), so every query/IK from a callback goes through this lock.
-        self._ui_lock = threading.Lock()
         self._mount()
 
     def _mount(self) -> None:
         """Build (or rebuild, after load_session) the whole scene + GUI over self.session."""
         self.robot_view = RobotView(self.server, self.session)
         self.obstacle_view = ObstacleView(self.server, self.session)
-        self._path_nodes: list = []
-        self._tree_nodes: list = []
+        self.ctx = StudioContext(self.session, self.server, self.robot_view, self.obstacle_view)
         self._plot_handles: list = []
         self._obstacle_counter = len(self.session.obstacles)
         self._playing = False
@@ -59,7 +52,7 @@ class StudioApp:
 
         # A loaded session already carries obstacles + a configured problem: render them.
         for obstacle in self.session.obstacles.values():
-            self.obstacle_view.add(obstacle, on_moved=lambda _id: self.refresh())
+            self.obstacle_view.add(obstacle, on_moved=lambda _id: self._on_obstacle_moved())
         if self.session.obstacles:
             self._sync_obstacle_pick()
         self.set_config(self.session.q)  # syncs sliders + collision tint
@@ -81,16 +74,40 @@ class StudioApp:
         goal = self.session.goal
         if goal is None:
             return
-        self._start_marker = self._marker("/plan/start", self.session.start, START_COLOR)
+        view = self.ctx.attempt_view
+        view.set_start_marker(self.session.start)
         if goal.kind == "joint" and goal.q is not None:
-            self._goal_marker = self._marker("/plan/goal", goal.q, GOAL_COLOR)
+            view.set_goal_marker(goal.q)
         elif goal.pose is not None:
-            self.ik_gizmo.position = goal.pose.translation()
-            self.ik_gizmo.wxyz = goal.pose.quaternion()
-            self._goal_marker = self.server.scene.add_point_cloud(
-                "/plan/goal", points=goal.pose.translation()[None, :],
-                colors=np.array([GOAL_COLOR]), point_size=0.025,
-            )
+            self.ctx.ik_gizmo.position = goal.pose.translation()
+            self.ctx.ik_gizmo.wxyz = goal.pose.quaternion()
+            view.set_goal_marker_point(goal.pose.translation())
+
+    # ---- Shared-state aliases (ADR-021 transition: the modes read ctx directly) --------------
+
+    @property
+    def _ui_lock(self) -> threading.Lock:
+        return self.ctx.ui_lock
+
+    @property
+    def ik_gizmo(self):
+        return self.ctx.ik_gizmo
+
+    @property
+    def _last_attempt(self) -> Optional[Attempt]:
+        return self.ctx.last_attempt
+
+    @_last_attempt.setter
+    def _last_attempt(self, attempt: Optional[Attempt]) -> None:
+        self.ctx.last_attempt = attempt
+
+    @property
+    def _path_nodes(self) -> list:
+        return self.ctx.attempt_view._path_nodes
+
+    @property
+    def _tree_nodes(self) -> list:
+        return self.ctx.attempt_view._tree_nodes
 
     # ---- Session panel -----------------------------------------------------------------------
 
@@ -142,6 +159,8 @@ class StudioApp:
                 )
                 slider.on_update(lambda _e: self._on_sliders())
                 self.sliders.append(slider)
+        self.ctx.status_sink = lambda text: setattr(self.status, "value", text)
+        self.ctx.config_listeners.append(self._sync_sliders)
 
     def _on_sliders(self) -> None:
         # Programmatic slider writes (set_config) fire this too — mid-sync the slider set is
@@ -152,25 +171,22 @@ class StudioApp:
         self.session.set_config(np.array([s.value for s in self.sliders]))
         self.refresh()
 
-    def set_config(self, q_new: np.ndarray) -> None:
-        """Set config from code (IK / scrub / play): syncs sliders without feedback loops."""
-        self.session.set_config(q_new)
+    def _sync_sliders(self, q_new: np.ndarray) -> None:
+        """Config listener: mirror a programmatic config change onto the sliders without
+        feedback loops (see _on_sliders for why the guard matters)."""
         self._syncing_sliders = True
         try:
             for slider, value in zip(self.sliders, q_new):
                 slider.value = float(value)
         finally:
             self._syncing_sliders = False
-        self.refresh()
+
+    def set_config(self, q_new: np.ndarray) -> None:
+        """Set config from code (IK / scrub / play): session + slider sync + robot refresh."""
+        self.ctx.set_config(q_new)
 
     def refresh(self) -> None:
-        with self._ui_lock:
-            state = self.robot_view.update_config(self.session.q)
-        if state.in_collision:
-            witness = f" ({state.witness.a} ↔ {state.witness.b})" if state.witness else ""
-            self.status.value = f"COLLIDING{witness}"
-        else:
-            self.status.value = f"free · clearance {state.min_distance:.3f} m"
+        self.ctx.refresh()
 
     # ---- IK panel --------------------------------------------------------------------------
 
@@ -188,7 +204,6 @@ class StudioApp:
             self.ik_branch_pick = self.server.gui.add_dropdown("branch", options=("—",),
                                                                initial_value="—")
 
-        self.ik_gizmo = self.server.scene.add_transform_controls("/ik_target", scale=0.25)
         self._ik_busy = False
         self._ik_branches: list = []
         self._snap_gizmo()
@@ -197,8 +212,12 @@ class StudioApp:
         solve_global.on_click(lambda _e: self._on_ik_solve(interactive=False))
         solve_branches.on_click(lambda _e: self._on_ik_branches())
         self.ik_branch_pick.on_update(lambda _e: self._on_ik_branch_pick())
-        self.ik_gizmo.on_update(lambda _e: self._on_ik_gizmo())
-        self.ik_link.on_update(lambda _e: self._snap_gizmo())
+        self.ctx.ik_gizmo.on_update(lambda _e: self._on_ik_gizmo())
+        self.ik_link.on_update(lambda _e: self._on_ik_link())
+
+    def _on_ik_link(self) -> None:
+        self.ctx.ee_link = self.ik_link.value  # the one place the shared EE link is written
+        self._snap_gizmo()
 
     def _snap_gizmo(self) -> None:
         pose = q.fk(self.session.model, self.session.q, self.ik_link.value)
@@ -325,6 +344,7 @@ class StudioApp:
             if oid in self.session.obstacles:
                 self.session.remove_obstacle(oid)
                 self.obstacle_view.remove(oid)
+                self.ctx.scene_changed()
                 self._sync_obstacle_pick()
                 self.refresh()
 
@@ -334,8 +354,13 @@ class StudioApp:
 
     def add_obstacle(self, oid: str, geometry, pose) -> None:
         obstacle = self.session.add_obstacle(oid, geometry, pose)
-        self.obstacle_view.add(obstacle, on_moved=lambda _id: self.refresh())
+        self.obstacle_view.add(obstacle, on_moved=lambda _id: self._on_obstacle_moved())
+        self.ctx.scene_changed()
         self._sync_obstacle_pick()
+        self.refresh()
+
+    def _on_obstacle_moved(self) -> None:
+        self.ctx.scene_changed()  # move_obstacle already invalidated the session caches
         self.refresh()
 
     def _sync_obstacle_pick(self) -> None:
@@ -380,24 +405,13 @@ class StudioApp:
         self.plan_button.on_click(lambda _e: self._on_plan_clicked())
         self.play_button.on_click(lambda _e: self._on_play_clicked())
         self.scrub.on_update(lambda _e: self._on_scrub())
-        self._start_marker: Optional[object] = None
-        self._goal_marker: Optional[object] = None
-        self._last_attempt: Optional[Attempt] = None
 
     def _ee(self) -> str:
-        return self.ik_link.value
-
-    def _marker(self, name: str, q_at: np.ndarray, color) -> object:
-        p = q.fk(self.session.model, q_at, self._ee()).translation()
-        return self.server.scene.add_point_cloud(
-            name, points=p[None, :], colors=np.array([color]), point_size=0.025
-        )
+        return self.ctx.ee_link
 
     def _set_start(self) -> None:
         self.session.set_start()
-        if self._start_marker is not None:
-            self._start_marker.remove()
-        self._start_marker = self._marker("/plan/start", self.session.start, START_COLOR)
+        self.ctx.attempt_view.set_start_marker(self.session.start)
 
     def _set_goal(self) -> None:
         if self.use_ik_goal.value:
@@ -405,13 +419,9 @@ class StudioApp:
                 np.asarray(self.ik_gizmo.position), np.asarray(self.ik_gizmo.wxyz)
             )
             self.session.set_goal_pose(self._ee(), target)
-            goal_preview = self.session.q
         else:
             self.session.set_goal_joints()
-            goal_preview = self.session.q
-        if self._goal_marker is not None:
-            self._goal_marker.remove()
-        self._goal_marker = self._marker("/plan/goal", goal_preview, GOAL_COLOR)
+        self.ctx.attempt_view.set_goal_marker(self.session.q)
 
     def _on_plan_clicked(self) -> None:
         if self.session.is_planning:
@@ -443,7 +453,6 @@ class StudioApp:
             self.plan_button.disabled = False
 
     def _show_attempt(self, attempt: Attempt) -> None:
-        self._last_attempt = attempt
         r = attempt.result
         stats = r.stats
         if r.ok():
@@ -451,65 +460,11 @@ class StudioApp:
                 f"{r.status} · {len(attempt.path)} wp · {stats.time_total * 1e3:.0f} ms · "
                 f"{stats.collision_configs} configs · seed {r.used_seed}"
             )
-            self._draw_path(attempt.path)
             self.scrub.value = 0.0
         else:
             self.plan_status.value = f"{r.status} · {r.message} · seed {r.used_seed}"
-            self._clear_path()
-        self._draw_trees(r)  # draws when record_tree captured them, clears otherwise
+        self.ctx.show_attempt(attempt)  # records + draws path/trees, fires attempt listeners
         self.traj_status.value = "—"  # a new plan invalidates the previous timing
-
-    def _draw_path(self, path) -> None:
-        self._clear_path()
-        model, ee = self.session.model, self._ee()
-        # Waypoint markers show the plan's structure; the curve is the TRUE end-effector path —
-        # FK sampled along the joint-space interpolation, not a straight polyline between
-        # waypoints (in Cartesian space the EE arcs between joint-space waypoints).
-        waypoints = np.array([q.fk(model, w, ee).translation() for w in path])
-        dense = self.session.sample_path(path, samples_per_segment=12)
-        curve = np.array([q.fk(model, w, ee).translation() for w in dense])
-        self._path_nodes.append(
-            self.server.scene.add_point_cloud(
-                "/plan/waypoints", points=waypoints,
-                colors=np.tile(np.array([PATH_COLOR]), (len(waypoints), 1)), point_size=0.008,
-            )
-        )
-        segments = np.stack([curve[:-1], curve[1:]], axis=1)
-        self._path_nodes.append(
-            self.server.scene.add_line_segments(
-                "/plan/path", points=segments,
-                colors=np.tile(np.array([PATH_COLOR]), (len(segments), 2, 1)),
-            )
-        )
-
-    def _clear_path(self) -> None:
-        for node in self._path_nodes:
-            node.remove()
-        self._path_nodes = []
-
-    def _draw_trees(self, result) -> None:
-        """R2 exploration view: each snapshot tree as parent→child EE segments (start=blue,
-        goal=orange). Empty result.trees just clears the previous drawing."""
-        for node in self._tree_nodes:
-            node.remove()
-        self._tree_nodes = []
-        if not getattr(result, "trees", None):
-            return
-        model, ee = self.session.model, self._ee()
-        for t_idx, tree in enumerate(result.trees):
-            points = np.array([q.fk(model, node, ee).translation() for node in tree.nodes])
-            segments = np.array(
-                [(points[parent], points[i]) for i, parent in enumerate(tree.parents) if parent >= 0]
-            )
-            if len(segments) == 0:
-                continue
-            color = TREE_COLORS[min(t_idx, len(TREE_COLORS) - 1)]
-            self._tree_nodes.append(
-                self.server.scene.add_line_segments(
-                    f"/plan/tree_{t_idx}", points=segments,
-                    colors=np.tile(np.array([color]), (len(segments), 2, 1)),
-                )
-            )
 
     # ---- Trajectory (Task 3.4 in the studio — roadmap R2) -----------------------------------
 
