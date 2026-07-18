@@ -35,6 +35,14 @@ const std::unordered_map<std::string, Factory> &registry() {
              "make_refiner(RefinerParams, robot, scene, field, spheres) instead (see "
              "refiner.hpp).");
        }},
+      {"prm",
+       [](const PlannerParams &, std::shared_ptr<const RobotInstance>,
+          std::shared_ptr<const collision::CollisionScene>) -> std::unique_ptr<Planner> {
+         throw std::runtime_error(
+             "make_planner: the 'prm' roadmap planner carries construction config (num_nodes, "
+             "connectivity) that this flat-PlannerParams entry point cannot; build it with "
+             "make_prm_planner(PrmParams, robot, scene) instead (see roadmap.hpp).");
+       }},
   };
   return r;
 }

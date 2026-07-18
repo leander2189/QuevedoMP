@@ -55,6 +55,7 @@ class StudioApp:
         self._build_trajectory_panel()
         self._build_clearance_panel()
         self._build_refine_panel()
+        self._build_roadmap_panel()
 
         # A loaded session already carries obstacles + a configured problem: render them.
         for obstacle in self.session.obstacles.values():
@@ -770,6 +771,91 @@ class StudioApp:
             )
         else:
             self.refine_status.value = f"{attempt.result.status} · {attempt.result.message}"
+
+    # ---- PRM roadmap (multi-query — roadmap R5) ----------------------------------------------
+
+    def _build_roadmap_panel(self) -> None:
+        with self.server.gui.add_folder("Roadmap (PRM)"):
+            self.prm_nodes = self.server.gui.add_number(
+                "nodes", initial_value=1000, min=50, max=20000, step=50
+            )
+            self.prm_k = self.server.gui.add_number("k neighbours", initial_value=10, min=2,
+                                                    max=50, step=1)
+            self.prm_seed = self.server.gui.add_number("build seed", initial_value=0, min=0,
+                                                       max=2**31)
+            self.prm_smooth = self.server.gui.add_checkbox("smooth query path", initial_value=True)
+            self.prm_build_button = self.server.gui.add_button("Build roadmap")
+            self.prm_status = self.server.gui.add_text("roadmap", initial_value="—", disabled=True)
+            self.prm_query_button = self.server.gui.add_button("Query roadmap (start→goal)")
+            self.prm_query_status = self.server.gui.add_text("query", initial_value="—",
+                                                             disabled=True)
+        self.prm_build_button.on_click(lambda _e: self._on_build_roadmap())
+        self.prm_query_button.on_click(lambda _e: self._on_query_roadmap())
+
+    def _roadmap_build_kwargs(self) -> dict:
+        return dict(
+            num_nodes=int(self.prm_nodes.value),
+            k_neighbors=int(self.prm_k.value),
+            seed=int(self.prm_seed.value),
+            smooth=bool(self.prm_smooth.value),
+            force=True,
+        )
+
+    def _on_build_roadmap(self) -> None:
+        if self.session.is_planning:
+            return
+        self.session.planner_params.edge_resolution = float(self.edge_res.value)
+        self.session.planner_params.max_link_sweep = float(self.link_sweep.value) * 1e-3
+        self.prm_status.value = "building…"
+        self.prm_build_button.disabled = True
+
+        def run() -> None:
+            try:
+                stats = self.session.build_roadmap(**self._roadmap_build_kwargs())
+                self.prm_status.value = (
+                    f"{stats.nodes} nodes · {stats.edges} edges · "
+                    f"{stats.collision_configs} configs · {stats.build_seconds * 1e3:.0f} ms"
+                )
+            except Exception as error:  # noqa: BLE001 — surface build failures to the UI
+                self.prm_status.value = f"FAILED: {error}"
+            finally:
+                self.prm_build_button.disabled = False
+
+        threading.Thread(target=run, name="quevedomp-roadmap", daemon=True).start()
+
+    def build_roadmap_now(self):
+        """Synchronous build — the headless smoke-test entry point."""
+        stats = self.session.build_roadmap(**self._roadmap_build_kwargs())
+        self.prm_status.value = f"{stats.nodes} nodes · {stats.edges} edges"
+        return stats
+
+    def _on_query_roadmap(self) -> None:
+        if self.session.goal is None:
+            self.prm_query_status.value = "set a goal first"
+            return
+        if self.session._prm is None:
+            self.prm_query_status.value = "build the roadmap first"
+            return
+        self.session.timeout = float(self.timeout.value)
+        try:
+            attempt = self.session.plan_roadmap(seed=int(self.prm_seed.value) or None)
+        except Exception as error:  # noqa: BLE001
+            self.prm_query_status.value = f"FAILED: {error}"
+            return
+        self._show_attempt(attempt)
+        r = attempt.result
+        self.prm_query_status.value = (
+            f"{r.status} · {len(attempt.path)} wp · {r.stats.time_total * 1e3:.1f} ms"
+            if r.ok() else f"{r.status} · {r.message}"
+        )
+
+    def query_roadmap_now(self) -> Attempt:
+        """Synchronous build-if-needed + query — the headless smoke-test entry point."""
+        if self.session._prm is None:
+            self.session.build_roadmap(**self._roadmap_build_kwargs())
+        attempt = self.session.plan_roadmap(seed=int(self.prm_seed.value) or None)
+        self._show_attempt(attempt)
+        return attempt
 
     def _on_play_timed_clicked(self) -> None:
         if self._playing:

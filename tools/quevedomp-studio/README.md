@@ -58,6 +58,11 @@ DTC cells, the SRDF-derived ACM) wired automatically; for any other robot pass `
    certified collision-free by the exact backend and recorded as a new attempt, so the scrub,
    *Play*, plots and *Parameterize* apply to it unchanged (headless equivalent:
    `StudioSession.refine()`).
+   The **Roadmap (PRM)** panel (roadmap R5, ADR-020) is the multi-query planner: *Build roadmap*
+   samples + validates a per-cell roadmap once (nodes/edges/configs/time shown), then *Query
+   roadmap* answers the current start→goal by graph search + smoothing — cheap and repeatable while
+   the scene is unchanged (the roadmap is invalidated when an obstacle moves). Headless equivalents:
+   `StudioSession.build_roadmap()` / `plan_roadmap()`.
 6. **Sessions**: the *Session* panel saves/loads the whole problem setup — robot + ACM and
    obstacles (Task 2a.5 serializer blobs, the same format Phase 3b capture bundles will carry)
    plus start/goal, timeout, edge step, and planner settings — so a benchmark problem is one

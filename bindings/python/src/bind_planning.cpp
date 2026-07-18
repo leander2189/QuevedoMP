@@ -25,6 +25,7 @@
 #include "quevedomp/clearance/clearance_field.hpp"
 #include "quevedomp/planning/planner.hpp"
 #include "quevedomp/planning/refiner.hpp"
+#include "quevedomp/planning/roadmap.hpp"
 #include "quevedomp/planning/smoother.hpp"
 #include "quevedomp/planning/types.hpp"
 
@@ -218,4 +219,56 @@ void bind_planning(nb::module_ &m) {
         "Build the R4 optimization refiner over a ClearanceField (R3) + robot sphere cover. The "
         "output is CERTIFIED collision-free by the exact scene backend — the field is never the "
         "certificate. A first-class Planner: call plan(problem).");
+
+  // ---- PRM roadmap planner (roadmap R5) ------------------------------------------------------
+  nb::class_<PrmParams>(m, "PrmParams",
+                        "Multi-query roadmap planner config. The roadmap is built once (fat-batch "
+                        "node/edge validation) at make_prm_planner time; each plan() is then a "
+                        "cheap graph query + P6 smoothing.")
+      .def(nb::init<>())
+      .def_rw("num_nodes", &PrmParams::num_nodes, "Sample budget; the free samples become nodes.")
+      .def_rw("k_neighbors", &PrmParams::k_neighbors)
+      .def_rw("connection_radius", &PrmParams::connection_radius,
+              "If > 0 (rad), also connect every node within this joint-space radius.")
+      .def_rw("edge_batch_configs", &PrmParams::edge_batch_configs,
+              "Cap on configs per edge-validation query_batch (0 = one batch for everything).")
+      .def_rw("edge_resolution", &PrmParams::edge_resolution)
+      .def_rw("max_link_sweep", &PrmParams::max_link_sweep)
+      .def_rw("lever_weights", &PrmParams::lever_weights)
+      .def_rw("constraints", &PrmParams::constraints,
+              "Build-time sampling-space narrowing (intersected with the URDF limits).")
+      .def_rw("collision", &PrmParams::collision,
+              "Collision options the WHOLE roadmap is validated under (also used for the "
+              "query-time start/goal connections; a query's own options are NOT used).")
+      .def_rw("seed", &PrmParams::seed)
+      .def_rw("smooth", &PrmParams::smooth,
+              "Shortcut-smooth (P6) the extracted path before return.");
+
+  nb::class_<PrmBuildStats>(m, "PrmBuildStats", "What the one-time roadmap build produced.")
+      .def_ro("nodes", &PrmBuildStats::nodes)
+      .def_ro("node_candidates", &PrmBuildStats::node_candidates)
+      .def_ro("edges", &PrmBuildStats::edges)
+      .def_ro("edge_candidates", &PrmBuildStats::edge_candidates)
+      .def_ro("collision_configs", &PrmBuildStats::collision_configs)
+      .def_ro("build_seconds", &PrmBuildStats::build_seconds)
+      .def("__repr__", [](const PrmBuildStats &s) {
+        return nb::str("PrmBuildStats(nodes={}, edges={}, configs={}, build={:.3f}s)")
+            .format(s.nodes, s.edges, s.collision_configs, s.build_seconds);
+      });
+
+  m.def(
+      "make_prm_planner",
+      [](PrmParams params, std::shared_ptr<const RobotInstance> robot,
+         std::shared_ptr<const collision::CollisionScene> scene) {
+        PrmBuildStats stats;
+        std::unique_ptr<Planner> planner;
+        {
+          nb::gil_scoped_release release; // the build is the heavy fat-batch phase
+          planner = make_prm_planner(std::move(params), std::move(robot), std::move(scene), &stats);
+        }
+        return nb::make_tuple(std::move(planner), stats);
+      },
+      "params"_a, "robot"_a, "scene"_a,
+      "Build the R5 PRM roadmap over (robot, scene); returns (planner, PrmBuildStats). The planner "
+      "is const + reentrant — one roadmap answers many plan() queries.");
 }

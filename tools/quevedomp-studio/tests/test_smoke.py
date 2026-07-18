@@ -114,6 +114,22 @@ def test_session_refine(session: StudioSession) -> None:
     session.goal = None
 
 
+def test_session_roadmap(session: StudioSession) -> None:
+    # R5: build a PRM roadmap once, then query it. Small roadmap keeps the smoke test fast; a
+    # 6-DOF query may not connect at this density, so success is not required — only that build +
+    # query run end to end and record an attempt.
+    session.set_start(np.zeros(6))
+    session.set_goal_joints(GOAL)
+    stats = session.build_roadmap(num_nodes=200, k_neighbors=6, seed=1)
+    assert stats.nodes > 0
+    assert session.roadmap_stats is stats
+    attempt = session.plan_roadmap(seed=1)  # reuses the built roadmap
+    assert attempt is session.attempts[-1]
+    if attempt.result.ok():
+        assert np.linalg.norm(np.asarray(attempt.path[0]) - np.zeros(6)) < 1e-6
+    session.goal = None
+
+
 def test_session_parametrize_timed_trajectory(session: StudioSession) -> None:
     session.set_start(np.zeros(6))
     session.set_goal_joints(GOAL)
@@ -367,6 +383,23 @@ def test_app_refine(app: StudioApp) -> None:
     finally:
         app.session.remove_obstacle("refine_probe")
         app.obstacle_view.remove("refine_probe")
+
+
+def test_app_roadmap(app: StudioApp) -> None:
+    # R5 in the UI: Build roadmap, then Query roadmap (start→goal), drawing like a plan.
+    app.set_config(np.zeros(6))
+    app._set_start()
+    app.set_config(GOAL)
+    app._set_goal()
+    app.prm_nodes.value = 200
+    app.prm_k.value = 6
+    app.prm_seed.value = 1
+    stats = app.build_roadmap_now()
+    assert stats.nodes > 0
+    assert app.prm_status.value != "—"
+    attempt = app.query_roadmap_now()
+    assert attempt is app.session.attempts[-1]
+    app.session.goal = None
 
 
 def test_app_ik_branch_picker(app: StudioApp) -> None:

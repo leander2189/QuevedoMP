@@ -167,6 +167,9 @@ class StudioSession:
         self._clearance_field = None
         self._clearance_resolution = 0.0
         self._robot_spheres = None
+        # R5 PRM roadmap: built once over the static scene, cached, invalidated on env edits.
+        self._prm = None
+        self._prm_stats = None
         self.attempt_listeners: list[Callable[[Attempt], None]] = []
         self._plan_thread: Optional[threading.Thread] = None
         self._ik = q.make_numerical_ik(self.model)
@@ -284,6 +287,7 @@ class StudioSession:
         obstacle = Obstacle(id, geometry, pose, handle)
         self.obstacles[id] = obstacle
         self._clearance_field = None  # the SDF describes the old environment
+        self._prm = None  # the roadmap was built over the old environment
         return obstacle
 
     def move_obstacle(self, id: str, pose: "q.Transform") -> None:
@@ -291,10 +295,12 @@ class StudioSession:
         obstacle.pose = pose
         self.scene.move_object(obstacle.handle, pose)
         self._clearance_field = None
+        self._prm = None
 
     def remove_obstacle(self, id: str) -> None:
         self.scene.remove_object(self.obstacles.pop(id).handle)
         self._clearance_field = None
+        self._prm = None
 
     def environment(self) -> "q.SceneDescription":
         env = q.SceneDescription()
@@ -493,6 +499,67 @@ class StudioSession:
             except Exception:
                 traceback.print_exc()
         return attempt_out
+
+    # ---- PRM roadmap planner (roadmap R5) -------------------------------------------------------
+
+    def build_roadmap(
+        self,
+        *,
+        num_nodes: int = 1000,
+        k_neighbors: int = 10,
+        connection_radius: float = 0.0,
+        seed: int = 0,
+        smooth: bool = True,
+        force: bool = False,
+    ):
+        """Build (once) and cache the PRM roadmap over the current static scene; returns its
+        PrmBuildStats. Invalidated whenever an obstacle changes. The heavy fat-batch phase."""
+        if self._prm is not None and not force:
+            return self._prm_stats
+        params = q.PrmParams()
+        params.num_nodes = num_nodes
+        params.k_neighbors = k_neighbors
+        params.connection_radius = connection_radius
+        params.edge_resolution = self.planner_params.edge_resolution
+        params.collision = self.query_options
+        params.seed = seed
+        params.smooth = smooth
+        if self.planner_params.max_link_sweep > 0:
+            params.max_link_sweep = self.planner_params.max_link_sweep
+            params.lever_weights = self.lever_weights()
+        self._prm, self._prm_stats = q.make_prm_planner(params, self.robot, self.scene)
+        return self._prm_stats
+
+    @property
+    def roadmap_stats(self):
+        return self._prm_stats
+
+    def plan_roadmap(self, seed: Optional[int] = None, **build_kwargs) -> Attempt:
+        """Query the PRM roadmap (building it first if needed), recording the result as an Attempt
+        like plan(). Cheap and reentrant once the roadmap exists (the multi-query point)."""
+        if self.goal is None:
+            raise RuntimeError("no goal set — call set_goal_joints() or set_goal_pose() first")
+        if self._prm is None:
+            self.build_roadmap(**build_kwargs)
+
+        problem = q.PlanningProblem()
+        problem.start = self.start
+        problem.goal = self.goal.to_goal()
+        problem.collision = self.query_options  # PRM ignores this; the roadmap fixed the semantics
+        problem.timeout = self.timeout
+        problem.seed = seed
+
+        result = self._prm.plan(problem)
+        attempt = Attempt(len(self.attempts), self.start.copy(), self.goal, result,
+                          list(result.path), smoothed=True)
+        self.trajectory = None
+        self.attempts.append(attempt)
+        for listener in self.attempt_listeners:
+            try:
+                listener(attempt)
+            except Exception:
+                traceback.print_exc()
+        return attempt
 
     # ---- Time parameterization (Task 3.4 / roadmap R2) ------------------------------------------
 
