@@ -402,7 +402,8 @@ def test_app_refine(app: StudioApp) -> None:
 
         app.refine_waypoints.value = 16
         app.refine_iters.value = 20
-        app.sdf_res.value = 30.0  # coarse field: keep the smoke test fast
+        # Refine's field resolution is its own knob now (ADR-021) — coarse keeps the test fast.
+        app.trajectory.chomp.sdf_resolution.value = 30.0
         refined = app.refine_now()
         assert refined is app.session.attempts[-1]
         assert app.refine_status.value != "—"

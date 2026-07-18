@@ -18,11 +18,9 @@ import viser
 import quevedomp as q
 
 from .context import StudioContext
-from .modes import IkMode, SceneMode
+from .modes import IkMode, SceneMode, TrajectoryMode
 from .robot_view import ObstacleView, RobotView
 from .session import Attempt, StudioSession
-
-PLOT_PALETTE = ("#e41a1c", "#377eb8", "#4daf4a", "#984ea3", "#ff7f00", "#a65628", "#f781bf")
 
 
 class StudioApp:
@@ -36,8 +34,6 @@ class StudioApp:
         self.robot_view = RobotView(self.server, self.session)
         self.obstacle_view = ObstacleView(self.server, self.session)
         self.ctx = StudioContext(self.session, self.server, self.robot_view, self.obstacle_view)
-        self._plot_handles: list = []
-        self._playing = False
 
         self._build_session_panel()
         self.scene = SceneMode(self.ctx)
@@ -45,10 +41,11 @@ class StudioApp:
         self.ik = IkMode(self.ctx)
         self.ik.build()
         self._build_planning_panel()
-        self._build_trajectory_panel()
+        self.trajectory = TrajectoryMode(self.ctx)
+        self.trajectory.build()
         self._build_clearance_panel()
-        self._build_refine_panel()
         self._build_roadmap_panel()
+        self._modes = [self.scene, self.ik, self.trajectory]
 
         self.set_config(self.session.q)  # syncs sliders + collision tint
         self._restore_plan_markers()
@@ -58,7 +55,8 @@ class StudioApp:
         if self.session.is_planning:
             raise RuntimeError("cannot load while a plan is running")
         new_session = StudioSession.load(path)
-        self._playing = False
+        for mode in getattr(self, "_modes", []):
+            mode.shutdown()  # stop playback threads before the gui/scene reset
         with self._ui_lock:
             self.session = new_session
             self.server.scene.reset()
@@ -223,17 +221,10 @@ class StudioApp:
             )  # R2: one snapshot copy at plan exit; drawn as line clouds per tree
             self.plan_button = self.server.gui.add_button("Plan")
             self.plan_status = self.server.gui.add_text("result", initial_value="—", disabled=True)
-            self.scrub = self.server.gui.add_slider("scrub", min=0.0, max=1.0, step=0.002,
-                                                    initial_value=0.0)
-            self.play_button = self.server.gui.add_button("▶ Play")
-            self.play_speed = self.server.gui.add_number("play speed (rad/s)", initial_value=0.5,
-                                                         min=0.05, max=5.0)
 
         set_start.on_click(lambda _e: self._set_start())
         set_goal.on_click(lambda _e: self._set_goal())
         self.plan_button.on_click(lambda _e: self._on_plan_clicked())
-        self.play_button.on_click(lambda _e: self._on_play_clicked())
-        self.scrub.on_update(lambda _e: self._on_scrub())
 
     def _ee(self) -> str:
         return self.ctx.ee_link
@@ -289,106 +280,77 @@ class StudioApp:
                 f"{r.status} · {len(attempt.path)} wp · {stats.time_total * 1e3:.0f} ms · "
                 f"{stats.collision_configs} configs · seed {r.used_seed}"
             )
-            self.scrub.value = 0.0
         else:
             self.plan_status.value = f"{r.status} · {r.message} · seed {r.used_seed}"
-        self.ctx.show_attempt(attempt)  # records + draws path/trees, fires attempt listeners
-        self.traj_status.value = "—"  # a new plan invalidates the previous timing
+        # Draws path/trees and fires the attempt listeners (Trajectory resets timing + scrub).
+        self.ctx.show_attempt(attempt)
 
-    # ---- Trajectory (Task 3.4 in the studio — roadmap R2) -----------------------------------
+    # ---- Trajectory-mode aliases (ADR-021 transition) ----------------------------------------
 
-    def _build_trajectory_panel(self) -> None:
-        with self.server.gui.add_folder("Trajectory"):
-            self.traj_accel = self.server.gui.add_number(
-                "default accel (rad/s²)", initial_value=8.0, min=0.1, max=100.0
-            )
-            self.traj_tip_speed = self.server.gui.add_number(
-                "tip speed cap (m/s, 0=off)", initial_value=0.0, min=0.0, max=10.0, step=0.05
-            )
-            self.traj_tip_accel = self.server.gui.add_number(
-                "tip accel cap (m/s², 0=off)", initial_value=0.0, min=0.0, max=100.0, step=0.5
-            )
-            self.traj_jerk = self.server.gui.add_number(
-                "jerk limit (rad/s³, 0=off)", initial_value=0.0, min=0.0, max=1000.0, step=5.0
-            )
-            self.param_button = self.server.gui.add_button("Parameterize")
-            self.traj_status = self.server.gui.add_text("trajectory", initial_value="—",
-                                                        disabled=True)
-            self.play_timed_button = self.server.gui.add_button("▶ Play (timed)")
-            self.time_scale = self.server.gui.add_number("time scale ×", initial_value=1.0,
-                                                         min=0.1, max=10.0, step=0.1)
-        self.plots_folder = self.server.gui.add_folder("Plots")
-        self.param_button.on_click(lambda _e: self._on_parameterize())
-        self.play_timed_button.on_click(lambda _e: self._on_play_timed_clicked())
+    @property
+    def traj_accel(self):
+        return self.trajectory.accel
+
+    @property
+    def traj_tip_speed(self):
+        return self.trajectory.tip_speed
+
+    @property
+    def traj_tip_accel(self):
+        return self.trajectory.tip_accel
+
+    @property
+    def traj_jerk(self):
+        return self.trajectory.jerk
+
+    @property
+    def traj_status(self):
+        return self.trajectory.status
+
+    @property
+    def time_scale(self):
+        return self.trajectory.time_scale
+
+    @property
+    def scrub(self):
+        return self.trajectory.scrub
+
+    @property
+    def _plot_handles(self) -> list:
+        return self.trajectory._plot_handles
+
+    @property
+    def _playing(self) -> bool:
+        return self.trajectory._playing
+
+    @property
+    def refine_waypoints(self):
+        return self.trajectory.chomp.waypoints
+
+    @property
+    def refine_iters(self):
+        return self.trajectory.chomp.iterations
+
+    @property
+    def refine_status(self):
+        return self.trajectory.refine_status
 
     def parametrize_now(self) -> None:
         """Synchronous parameterize + plots — the headless smoke-test entry point."""
-        self._on_parameterize()
+        self.trajectory.parametrize()
 
-    def _on_parameterize(self) -> None:
-        if self._last_attempt is None or not self._last_attempt.result.ok():
-            self.traj_status.value = "plan first"
-            return
-        try:
-            with self._ui_lock:
-                tj = self.session.parametrize(
-                    self._last_attempt,
-                    default_acceleration=float(self.traj_accel.value),
-                    tip_linear_velocity=float(self.traj_tip_speed.value),
-                    tip_linear_acceleration=float(self.traj_tip_accel.value),
-                    max_jerk=float(self.traj_jerk.value),
-                    tip_link=self._ee(),
-                )
-        except RuntimeError as error:
-            self.traj_status.value = f"FAILED: {error}"
-            return
-        jerk_note = (
-            f" · jerk certified in {tj.jerk_passes} passes"
-            if float(self.traj_jerk.value) > 0 else ""
-        )
-        self.traj_status.value = f"{tj.duration:.2f} s · {len(tj.times)} nodes{jerk_note}"
-        self._draw_plots(tj)
+    def refine_now(self) -> Attempt:
+        """Synchronous CHOMP polish of the last plan — the headless smoke-test entry point."""
+        return self.trajectory.refine_now()
 
-    def _draw_plots(self, tj) -> None:
-        import viser.uplot as uplot
+    def _on_scrub(self) -> None:
+        self.trajectory._on_scrub()
 
-        for handle in self._plot_handles:
-            handle.remove()
-        self._plot_handles = []
-        t = np.ascontiguousarray(tj.times)
-        names = [j.name for j in self.session.movable_joints()]
+    def play(self, blocking: bool = False, duration: Optional[float] = None) -> None:
+        self.trajectory.play(blocking=blocking, duration=duration)
 
-        def joint_plot(title: str, matrix: np.ndarray):
-            series = (uplot.Series(label="t (s)"),) + tuple(
-                uplot.Series(label=names[i] if i < len(names) else f"j{i}",
-                             stroke=PLOT_PALETTE[i % len(PLOT_PALETTE)], width=1.5)
-                for i in range(matrix.shape[1])
-            )
-            data = (t,) + tuple(np.ascontiguousarray(matrix[:, i]) for i in range(matrix.shape[1]))
-            return self.server.gui.add_uplot(data=data, series=series, title=title, aspect=1.8)
-
-        with self.plots_folder:
-            self._plot_handles.append(joint_plot("joint velocity (rad/s)", tj.velocities))
-            self._plot_handles.append(joint_plot("joint acceleration (rad/s²)", tj.accelerations))
-            tip = np.ascontiguousarray(
-                np.array(
-                    [
-                        np.linalg.norm(
-                            (q.jacobian(self.session.model, tj.positions[k], self._ee())
-                             @ tj.velocities[k])[:3]
-                        )
-                        for k in range(len(t))
-                    ]
-                )
-            )
-            self._plot_handles.append(
-                self.server.gui.add_uplot(
-                    data=(t, tip),
-                    series=(uplot.Series(label="t (s)"),
-                            uplot.Series(label="‖v_tip‖ (m/s)", stroke="#377eb8", width=1.5)),
-                    title="tip speed (m/s)", aspect=1.8,
-                )
-            )
+    def play_timed(self, blocking: bool = False) -> None:
+        self.trajectory.play_timed(blocking=blocking)
 
     # ---- Clearance field (roadmap R3) --------------------------------------------------------
 
@@ -468,93 +430,6 @@ class StudioApp:
         self._slice_node = self.server.scene.add_point_cloud(
             "/clearance/slice", points=points, colors=colors, point_size=res * stride * 0.9,
         )
-
-    # ---- Refine (CHOMP/TrajOpt — roadmap R4) -------------------------------------------------
-
-    def _build_refine_panel(self) -> None:
-        with self.server.gui.add_folder("Refine (CHOMP)"):
-            self.refine_standalone = self.server.gui.add_checkbox(
-                "standalone (straight-line seed)", initial_value=False
-            )  # off = polish the last plan; on = optimize a straight line to the goal
-            self.refine_waypoints = self.server.gui.add_number(
-                "waypoints", initial_value=64, min=8, max=400, step=1
-            )
-            self.refine_iters = self.server.gui.add_number(
-                "iterations", initial_value=100, min=1, max=1000, step=1
-            )
-            self.refine_clear_w = self.server.gui.add_number(
-                "clearance weight", initial_value=1.0, min=0.0, max=50.0, step=0.5
-            )
-            self.refine_smooth_w = self.server.gui.add_number(
-                "smoothness weight", initial_value=1.0, min=0.0, max=50.0, step=0.5
-            )
-            self.refine_eps = self.server.gui.add_number(
-                "clearance ε (m)", initial_value=0.10, min=0.01, max=1.0, step=0.01
-            )
-            self.refine_step = self.server.gui.add_number(
-                "step size", initial_value=0.1, min=0.001, max=1.0, step=0.01
-            )
-            self.refine_button = self.server.gui.add_button("Refine (CHOMP)")
-            self.refine_status = self.server.gui.add_text("refine", initial_value="—",
-                                                          disabled=True)
-        self.refine_button.on_click(lambda _e: self._on_refine_clicked())
-
-    def _refine_kwargs(self) -> dict:
-        return dict(
-            standalone=bool(self.refine_standalone.value),
-            waypoints=int(self.refine_waypoints.value),
-            max_iterations=int(self.refine_iters.value),
-            clearance_weight=float(self.refine_clear_w.value),
-            smoothness_weight=float(self.refine_smooth_w.value),
-            clearance_epsilon=float(self.refine_eps.value),
-            step_size=float(self.refine_step.value),
-            resolution=float(self.sdf_res.value) * 1e-3,  # shares the Clearance panel's res knob
-        )
-
-    def _on_refine_clicked(self) -> None:
-        if self.session.is_planning:
-            return
-        if self.session.goal is None:
-            self.refine_status.value = "set a goal first"
-            return
-        if not self.refine_standalone.value and self._last_attempt is None:
-            self.refine_status.value = "plan first (or tick standalone)"
-            return
-        # The certificate must validate at the same fidelity the plan used.
-        self.session.timeout = float(self.timeout.value)
-        self.session.planner_params.edge_resolution = float(self.edge_res.value)
-        self.session.planner_params.max_link_sweep = float(self.link_sweep.value) * 1e-3
-        self.refine_status.value = "refining…"
-        self.refine_button.disabled = True
-        self.plan_button.disabled = True
-        self.session.refine_async(self._on_refine_done, **self._refine_kwargs())
-
-    def refine_now(self) -> Attempt:
-        """Synchronous refine + display — the headless smoke-test entry point."""
-        attempt = self.session.refine(**self._refine_kwargs())
-        self._on_refine_display(attempt)
-        return attempt
-
-    def _on_refine_done(self, attempt: Optional[Attempt]) -> None:
-        try:
-            if attempt is None:
-                self.refine_status.value = "ERROR — see server console"
-            else:
-                self._on_refine_display(attempt)
-        finally:
-            self.refine_button.disabled = False
-            self.plan_button.disabled = False
-
-    def _on_refine_display(self, attempt: Attempt) -> None:
-        self._show_attempt(attempt)  # draws the refined path + resets timing, like a plan
-        stats = attempt.result.stats
-        if attempt.result.ok():
-            self.refine_status.value = (
-                f"{stats.refiner_mode} · {len(attempt.path)} wp · "
-                f"{stats.time_total * 1e3:.0f} ms · certified free"
-            )
-        else:
-            self.refine_status.value = f"{attempt.result.status} · {attempt.result.message}"
 
     # ---- PRM roadmap (multi-query — roadmap R5) ----------------------------------------------
 
@@ -641,102 +516,6 @@ class StudioApp:
         attempt = self.session.plan_roadmap(seed=int(self.prm_seed.value) or None)
         self._show_attempt(attempt)
         return attempt
-
-    def _on_play_timed_clicked(self) -> None:
-        if self._playing:
-            self._playing = False  # acts as a Stop button while running
-            return
-        self.play_timed(blocking=False)
-
-    def play_timed(self, blocking: bool = False) -> None:
-        """Animate the robot along the parameterized trajectory in REAL time (× time scale) —
-        what the velocity profile actually looks like, unlike the constant-rate scrub."""
-        tj = self.session.trajectory
-        if tj is None or self._playing:
-            return
-        scale = max(float(self.time_scale.value), 1e-3)
-
-        def set_label(text: str) -> None:
-            try:
-                self.play_timed_button.label = text
-            except AttributeError:
-                pass
-
-        def run() -> None:
-            self._playing = True
-            start = time.monotonic()
-            try:
-                set_label("■ Stop")
-                while self._playing:
-                    t = (time.monotonic() - start) * scale
-                    self.set_config(tj.sample(t))
-                    if t >= tj.duration:
-                        break
-                    time.sleep(1.0 / 30.0)
-            finally:
-                self._playing = False
-                set_label("▶ Play (timed)")
-
-        if blocking:
-            run()
-        else:
-            threading.Thread(target=run, name="quevedomp-play-timed", daemon=True).start()
-
-    def _on_scrub(self) -> None:
-        attempt = self._last_attempt
-        if attempt is None or len(attempt.path) < 2:
-            return
-        t = float(self.scrub.value) * (len(attempt.path) - 1)
-        i = min(int(t), len(attempt.path) - 2)
-        frac = t - i
-        q_at = (1.0 - frac) * attempt.path[i] + frac * attempt.path[i + 1]
-        self.set_config(q_at)
-
-    # ---- Play ------------------------------------------------------------------------------
-
-    def _on_play_clicked(self) -> None:
-        if self._playing:
-            self._playing = False  # acts as a Stop button while running
-            return
-        self.play(blocking=False)
-
-    def play(self, blocking: bool = False, duration: Optional[float] = None) -> None:
-        """Animate the robot along the last path at constant joint speed via the scrub slider."""
-        attempt = self._last_attempt
-        if attempt is None or len(attempt.path) < 2 or self._playing:
-            return
-        if duration is None:
-            length = sum(
-                float(np.max(np.abs(b - a))) for a, b in zip(attempt.path, attempt.path[1:])
-            )
-            duration = float(np.clip(length / float(self.play_speed.value), 0.5, 60.0))
-
-        def set_label(text: str) -> None:
-            try:
-                self.play_button.label = text
-            except AttributeError:  # older viser: label immutable — Play just re-runs
-                pass
-
-        def run() -> None:
-            self._playing = True
-            start = time.monotonic()
-            try:
-                set_label("■ Stop")
-                while self._playing:
-                    t = (time.monotonic() - start) / duration
-                    self.scrub.value = min(t, 1.0)
-                    self._on_scrub()
-                    if t >= 1.0:
-                        break
-                    time.sleep(1.0 / 30.0)
-            finally:
-                self._playing = False
-                set_label("▶ Play")
-
-        if blocking:
-            run()
-        else:
-            threading.Thread(target=run, name="quevedomp-play", daemon=True).start()
 
     # ---- Lifecycle -------------------------------------------------------------------------
 
