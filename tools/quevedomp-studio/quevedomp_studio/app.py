@@ -808,20 +808,19 @@ class StudioApp:
         self.session.planner_params.max_link_sweep = float(self.link_sweep.value) * 1e-3
         self.prm_status.value = "building…"
         self.prm_build_button.disabled = True
+        self.session.build_roadmap_async(self._on_roadmap_built, **self._roadmap_build_kwargs())
 
-        def run() -> None:
-            try:
-                stats = self.session.build_roadmap(**self._roadmap_build_kwargs())
+    def _on_roadmap_built(self, stats) -> None:
+        try:
+            if stats is None:
+                self.prm_status.value = "FAILED — see server console"
+            else:
                 self.prm_status.value = (
                     f"{stats.nodes} nodes · {stats.edges} edges · "
                     f"{stats.collision_configs} configs · {stats.build_seconds * 1e3:.0f} ms"
                 )
-            except Exception as error:  # noqa: BLE001 — surface build failures to the UI
-                self.prm_status.value = f"FAILED: {error}"
-            finally:
-                self.prm_build_button.disabled = False
-
-        threading.Thread(target=run, name="quevedomp-roadmap", daemon=True).start()
+        finally:
+            self.prm_build_button.disabled = False
 
     def build_roadmap_now(self):
         """Synchronous build — the headless smoke-test entry point."""
@@ -830,10 +829,12 @@ class StudioApp:
         return stats
 
     def _on_query_roadmap(self) -> None:
+        if self.session.is_planning:
+            return
         if self.session.goal is None:
             self.prm_query_status.value = "set a goal first"
             return
-        if self.session._prm is None:
+        if not self.session.has_roadmap:
             self.prm_query_status.value = "build the roadmap first"
             return
         self.session.timeout = float(self.timeout.value)
@@ -851,7 +852,7 @@ class StudioApp:
 
     def query_roadmap_now(self) -> Attempt:
         """Synchronous build-if-needed + query — the headless smoke-test entry point."""
-        if self.session._prm is None:
+        if not self.session.has_roadmap:
             self.session.build_roadmap(**self._roadmap_build_kwargs())
         attempt = self.session.plan_roadmap(seed=int(self.prm_seed.value) or None)
         self._show_attempt(attempt)

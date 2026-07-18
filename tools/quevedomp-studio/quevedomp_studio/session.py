@@ -534,6 +534,34 @@ class StudioSession:
     def roadmap_stats(self):
         return self._prm_stats
 
+    @property
+    def has_roadmap(self) -> bool:
+        """True while the cached PRM roadmap is valid (obstacle edits invalidate it)."""
+        return self._prm is not None
+
+    @property
+    def has_clearance_field(self) -> bool:
+        """True while the cached ClearanceField is valid (obstacle edits invalidate it)."""
+        return self._clearance_field is not None
+
+    def build_roadmap_async(self, on_done: Callable[[Optional[object]], None], **kwargs) -> None:
+        """Run build_roadmap() on the plan worker thread (shares the one-at-a-time guard with
+        plan_async/refine_async); `on_done` fires with the PrmBuildStats, or None if the build
+        raised. `kwargs` pass through to build_roadmap()."""
+        if self.is_planning:
+            raise RuntimeError("a plan, refine, or roadmap build is already running")
+
+        def run() -> None:
+            stats = None
+            try:
+                stats = self.build_roadmap(**kwargs)
+            except Exception:
+                traceback.print_exc()
+            on_done(stats)
+
+        self._plan_thread = threading.Thread(target=run, name="quevedomp-roadmap", daemon=True)
+        self._plan_thread.start()
+
     def plan_roadmap(self, seed: Optional[int] = None, **build_kwargs) -> Attempt:
         """Query the PRM roadmap (building it first if needed), recording the result as an Attempt
         like plan(). Cheap and reentrant once the roadmap exists (the multi-query point)."""

@@ -130,6 +130,35 @@ def test_session_roadmap(session: StudioSession) -> None:
     session.goal = None
 
 
+def test_session_build_roadmap_async(session: StudioSession) -> None:
+    # The async build shares the one-at-a-time worker with plan/refine: it must refuse to start
+    # while planning, and its callback must deliver the stats (None only on an exception).
+    import threading
+
+    session.set_start(np.zeros(6))
+    session.set_goal_joints(GOAL)
+    done = threading.Event()
+    received: list = []
+
+    def on_done(stats) -> None:
+        received.append(stats)
+        done.set()
+
+    session.build_roadmap_async(on_done, num_nodes=100, k_neighbors=6, seed=2, force=True)
+    with pytest.raises(RuntimeError):  # second build while the first runs
+        session.build_roadmap_async(on_done, num_nodes=100, force=True)
+    assert done.wait(timeout=60.0)
+    session._plan_thread.join(timeout=10.0)
+    assert received[0] is not None and received[0].nodes > 0
+    assert session.has_roadmap
+    session.add_obstacle(
+        "stale_probe", q.SphereShape(0.05), q.Transform.from_translation(np.array([2.0, 2.0, 2.0]))
+    )
+    assert not session.has_roadmap  # obstacle edits invalidate the cache
+    session.remove_obstacle("stale_probe")
+    session.goal = None
+
+
 def test_session_parametrize_timed_trajectory(session: StudioSession) -> None:
     session.set_start(np.zeros(6))
     session.set_goal_joints(GOAL)
