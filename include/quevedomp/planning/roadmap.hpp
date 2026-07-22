@@ -19,6 +19,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <utility>
+#include <vector>
 
 #include "quevedomp/collision/collision_scene.hpp"
 #include "quevedomp/collision/types.hpp"
@@ -65,6 +67,12 @@ struct PrmParams {
 
   // Shortcut-smooth the extracted path (P6) before returning. Off ⇒ the raw graph path.
   bool smooth = true;
+
+  // Copy the roadmap geometry (nodes/edges/component labels) into PrmBuildStats at build exit, for
+  // the studio's roadmap debug view. One snapshot copy — zero cost in the build loop; off by
+  // default (component COUNTS are always reported; only the drawable geometry is gated). Mirrors
+  // PlannerParams::record_tree.
+  bool export_roadmap = false;
 };
 
 // What the one-time roadmap build produced (diagnostics; the studio/benchmark show these).
@@ -75,6 +83,23 @@ struct PrmBuildStats {
   std::size_t edge_candidates = 0;     // candidate edges validated
   std::uint64_t collision_configs = 0; // total configs pushed through the backend at build
   double build_seconds = 0.0;
+
+  // Connectivity diagnostics: the number of connected components of the roadmap graph and the
+  // node count of the largest one. A narrow passage that no candidate edge crosses splits the
+  // roadmap into ≥2 components — so num_components > 1 with a large second component is the
+  // build-time signature of a bottleneck (a query whose start and goal land in different
+  // components then has no roadmap path, however dense the roadmap is). Always computed.
+  std::size_t num_components = 0;
+  std::size_t largest_component = 0;
+
+  // Roadmap geometry snapshot for visualization/debugging (the studio draws it colored by
+  // component so the split is visible). `roadmap_nodes[i]` is node i's config; `roadmap_edges`
+  // are index pairs (a, b) into it; `roadmap_component[i]` is node i's component id in
+  // [0, num_components). Populated only when PrmParams::export_roadmap is set (a snapshot copy at
+  // build exit — off by default so a plain build stays lean, like PlannerParams::record_tree).
+  std::vector<JointPosition> roadmap_nodes;
+  std::vector<std::pair<std::size_t, std::size_t>> roadmap_edges;
+  std::vector<int> roadmap_component;
 };
 
 // Build the roadmap over `robot` (its model + ACM) and `scene`, returning a queryable Planner.

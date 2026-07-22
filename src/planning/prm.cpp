@@ -26,6 +26,9 @@
 #include <limits>
 #include <queue>
 #include <random>
+#include <set>
+#include <sstream>
+#include <string>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -151,6 +154,44 @@ std::vector<int> k_nearest(const std::vector<JointPosition> &nodes, const JointP
       break; // sorted: once past k and outside radius, done
     }
   }
+  return out;
+}
+
+// Connected components of an n-node undirected graph given its edge list (endpoints in [0, n)).
+// Returns per-node labels compacted to [0, num_components), assigned in ascending node order so the
+// labeling is deterministic. Union-find with path halving — O((n + edges)·α), trivial even at the
+// largest roadmap sizes, so it always runs (the counts are a build diagnostic worth having free).
+std::vector<int> connected_components(std::size_t n, const std::vector<std::pair<int, int>> &edges,
+                                      std::size_t &num_components) {
+  std::vector<int> parent(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    parent[i] = static_cast<int>(i);
+  }
+  const auto find = [&](int x) {
+    while (parent[static_cast<std::size_t>(x)] != x) {
+      parent[static_cast<std::size_t>(x)] =
+          parent[static_cast<std::size_t>(parent[static_cast<std::size_t>(x)])];
+      x = parent[static_cast<std::size_t>(x)];
+    }
+    return x;
+  };
+  for (const auto &[a, b] : edges) {
+    const int ra = find(a), rb = find(b);
+    if (ra != rb) {
+      parent[static_cast<std::size_t>(std::max(ra, rb))] = std::min(ra, rb);
+    }
+  }
+  std::vector<int> label(n, -1);
+  std::vector<int> out(n, 0);
+  int next = 0;
+  for (std::size_t i = 0; i < n; ++i) {
+    const int r = find(static_cast<int>(i));
+    if (label[static_cast<std::size_t>(r)] < 0) {
+      label[static_cast<std::size_t>(r)] = next++;
+    }
+    out[i] = label[static_cast<std::size_t>(r)];
+  }
+  num_components = static_cast<std::size_t>(next);
   return out;
 }
 
@@ -386,8 +427,53 @@ public:
     result.stats.iterations = 0;
 
     if (reached < 0) {
-      return finish(PlanningStatus::NoSolution,
-                    "start and goal are not connected through the roadmap");
+      // Diagnose WHY: which roadmap components did start / the goals actually connect to? (A free
+      // direct start↔goal edge would have solved it, so we only look at roadmap-node neighbours.)
+      const auto reached_components = [&](int idx) {
+        std::set<int> comps;
+        const auto it = extra.find(idx);
+        if (it != extra.end()) {
+          for (const auto &[to, w] : it->second) {
+            if (to < N) {
+              comps.insert(component_[static_cast<std::size_t>(to)]);
+            }
+          }
+        }
+        return comps;
+      };
+      std::set<int> start_comps = reached_components(start_idx);
+      std::set<int> goal_comps;
+      for (std::size_t g = 0; g < goals.size(); ++g) {
+        const auto c = reached_components(goal0 + static_cast<int>(g));
+        goal_comps.insert(c.begin(), c.end());
+      }
+      const auto fmt = [](const std::set<int> &s) {
+        std::ostringstream os;
+        os << "{";
+        bool first = true;
+        for (const int c : s) {
+          os << (first ? "" : ",") << c;
+          first = false;
+        }
+        os << "}";
+        return os.str();
+      };
+      std::ostringstream msg;
+      if (start_comps.empty() && goal_comps.empty()) {
+        msg << "neither start nor goal connects to any roadmap node — roadmap too sparse near both "
+               "(raise num_nodes / k_neighbors / connection_radius)";
+      } else if (start_comps.empty()) {
+        msg << "start connects to no roadmap node (isolated start) — raise num_nodes / k_neighbors "
+               "near it";
+      } else if (goal_comps.empty()) {
+        msg << "goal connects to no roadmap node (isolated goal) — raise num_nodes / k_neighbors "
+               "near it";
+      } else {
+        msg << "start and goal reach DISJOINT roadmap components (start→" << fmt(start_comps)
+            << ", goal→" << fmt(goal_comps) << " of " << num_components_
+            << ") — a narrow passage splits the roadmap; no roadmap path crosses it";
+      }
+      return finish(PlanningStatus::NoSolution, msg.str());
     }
 
     // Reconstruct + optionally smooth.
@@ -448,6 +534,7 @@ private:
     }
 
     // --- Edges: k-nearest (+radius) candidate edges, deduped, validated in fat batches. ---
+    std::vector<std::pair<int, int>> kept_edges; // collision-free edges kept (for components/export)
     if (nodes_.size() >= 2) {
       std::unordered_set<long long> seen;
       std::vector<std::pair<int, int>> cand;
@@ -472,6 +559,7 @@ private:
           validate_segments(segs, *scene_, *robot_, opts, *ws, disc_, params_.edge_batch_configs,
                             stats.collision_configs, t_collision);
       adj_.assign(nodes_.size(), {});
+      kept_edges.reserve(cand.size());
       for (std::size_t e = 0; e < cand.size(); ++e) {
         if (!free[e]) {
           continue;
@@ -481,10 +569,33 @@ private:
             (nodes_[static_cast<std::size_t>(a)] - nodes_[static_cast<std::size_t>(b)]).norm();
         adj_[static_cast<std::size_t>(a)].emplace_back(b, w);
         adj_[static_cast<std::size_t>(b)].emplace_back(a, w);
+        kept_edges.emplace_back(a, b);
         ++stats.edges;
       }
     } else {
       adj_.assign(nodes_.size(), {});
+    }
+
+    // Connectivity: the roadmap's connected components. A bottleneck no edge crosses shows up here
+    // as ≥2 components; a query then fails iff its start and goal land in different ones.
+    component_ = connected_components(nodes_.size(), kept_edges, num_components_);
+    stats.num_components = num_components_;
+    std::vector<std::size_t> comp_size(num_components_, 0);
+    for (const int c : component_) {
+      ++comp_size[static_cast<std::size_t>(c)];
+    }
+    if (!comp_size.empty()) {
+      stats.largest_component = *std::max_element(comp_size.begin(), comp_size.end());
+    }
+
+    // Optional geometry snapshot for the studio's roadmap debug view (one copy at build exit).
+    if (params_.export_roadmap) {
+      stats.roadmap_nodes = nodes_;
+      stats.roadmap_component = component_;
+      stats.roadmap_edges.reserve(kept_edges.size());
+      for (const auto &[a, b] : kept_edges) {
+        stats.roadmap_edges.emplace_back(static_cast<std::size_t>(a), static_cast<std::size_t>(b));
+      }
     }
 
     stats.nodes = nodes_.size();
@@ -500,6 +611,8 @@ private:
   collision::EdgeDiscretization disc_;
   std::vector<JointPosition> nodes_;
   std::vector<std::vector<std::pair<int, double>>> adj_; // parallel to nodes_
+  std::vector<int> component_;      // connected-component id per node (parallel to nodes_)
+  std::size_t num_components_ = 0;  // number of connected components of the roadmap
 };
 
 } // namespace

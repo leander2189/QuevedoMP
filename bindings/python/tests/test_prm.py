@@ -85,6 +85,51 @@ def test_one_roadmap_many_queries(cell):
         assert _free(scene, robot, list(r.path))
 
 
+@pytest.fixture(scope="module")
+def divided_cell():
+    """The gantry with a FULL-WIDTH divider at y=0: the free space splits into a lower (y<0) and
+    an upper (y>0) strip with no collision-free crossing — the roadmap must split into components."""
+    model = q.RobotModel.from_urdf(GANTRY_2D)
+    robot = q.RobotInstance(model)
+    env = q.SceneDescription()
+    env.add("divider", q.BoxShape(np.array([2.5, 0.15, 0.5])),
+            q.Transform.from_translation(np.array([0.0, 0.0, 0.0])))
+    scene = q.make_static_scene(model, env)
+    return model, robot, scene
+
+
+def test_split_roadmap_diagnostics(divided_cell):
+    model, robot, scene = divided_cell
+    p = _params(7)
+    p.num_nodes = 600
+    p.export_roadmap = True
+    prm, stats = q.make_prm_planner(p, robot, scene)
+
+    # A full-width divider disconnects the free space, so the roadmap is not one component.
+    assert stats.num_components >= 2
+    assert 0 < stats.largest_component <= stats.nodes
+
+    # Geometry export is self-consistent (studio draws this).
+    assert len(stats.roadmap_nodes) == stats.nodes
+    assert len(stats.roadmap_component) == stats.nodes
+    assert all(0 <= c < stats.num_components for c in stats.roadmap_component)
+    for a, b in stats.roadmap_edges:
+        assert 0 <= a < stats.nodes and 0 <= b < stats.nodes
+
+    # A query across the divider fails with a diagnostic, not a bare "no path".
+    r = prm.plan(_problem([0.0, -1.0], [0.0, 1.0], 1))
+    assert not r.ok()
+    assert "DISJOINT" in r.message or "narrow passage" in r.message, r.message
+
+
+def test_export_roadmap_off_by_default(cell):
+    model, robot, scene = cell
+    _, stats = q.make_prm_planner(_params(4), robot, scene)  # export_roadmap defaults False
+    assert stats.num_components >= 1          # counts always come back
+    assert len(stats.roadmap_nodes) == 0      # geometry only on request
+    assert len(stats.roadmap_edges) == 0
+
+
 def test_deterministic_per_seed(cell):
     model, robot, scene = cell
     a, _ = q.make_prm_planner(_params(9), robot, scene)

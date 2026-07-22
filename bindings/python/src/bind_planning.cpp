@@ -242,7 +242,11 @@ void bind_planning(nb::module_ &m) {
               "query-time start/goal connections; a query's own options are NOT used).")
       .def_rw("seed", &PrmParams::seed)
       .def_rw("smooth", &PrmParams::smooth,
-              "Shortcut-smooth (P6) the extracted path before return.");
+              "Shortcut-smooth (P6) the extracted path before return.")
+      .def_rw("export_roadmap", &PrmParams::export_roadmap,
+              "Copy the roadmap geometry (nodes/edges/component labels) into PrmBuildStats for the "
+              "studio's roadmap debug view. One snapshot copy at build exit; off by default "
+              "(component COUNTS are always reported regardless).");
 
   nb::class_<PrmBuildStats>(m, "PrmBuildStats", "What the one-time roadmap build produced.")
       .def_ro("nodes", &PrmBuildStats::nodes)
@@ -251,9 +255,23 @@ void bind_planning(nb::module_ &m) {
       .def_ro("edge_candidates", &PrmBuildStats::edge_candidates)
       .def_ro("collision_configs", &PrmBuildStats::collision_configs)
       .def_ro("build_seconds", &PrmBuildStats::build_seconds)
+      .def_ro("num_components", &PrmBuildStats::num_components,
+              "Connected components of the roadmap graph. >1 with a large second component is the "
+              "build-time signature of a bottleneck no edge crossed.")
+      .def_ro("largest_component", &PrmBuildStats::largest_component,
+              "Node count of the biggest connected component.")
+      .def_ro("roadmap_nodes", &PrmBuildStats::roadmap_nodes,
+              "Node configs (only when PrmParams.export_roadmap was set).")
+      .def_ro("roadmap_edges", &PrmBuildStats::roadmap_edges,
+              "Edges as (a, b) index pairs into roadmap_nodes (export_roadmap only).")
+      .def_ro("roadmap_component", &PrmBuildStats::roadmap_component,
+              "Per-node connected-component id in [0, num_components) (export_roadmap only).")
       .def("__repr__", [](const PrmBuildStats &s) {
-        return nb::str("PrmBuildStats(nodes={}, edges={}, configs={}, build={:.3f}s)")
-            .format(s.nodes, s.edges, s.collision_configs, s.build_seconds);
+        return nb::str(
+                   "PrmBuildStats(nodes={}, edges={}, components={} (largest {}), configs={}, "
+                   "build={:.3f}s)")
+            .format(s.nodes, s.edges, s.num_components, s.largest_component, s.collision_configs,
+                    s.build_seconds);
       });
 
   m.def(
