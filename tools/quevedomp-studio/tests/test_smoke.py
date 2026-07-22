@@ -432,6 +432,19 @@ def test_app_roadmap(app: StudioApp) -> None:
     app.session.goal = None
 
 
+def test_app_goal_escapability(app: StudioApp) -> None:
+    # The goal-pocket diagnostic: probe how far the robot can move away from the goal config.
+    app.set_config(GOAL)
+    app.plan.set_goal()
+    text = app.probe_escapability_now()  # goal in open space → every direction escapable
+    assert "max free" in text and "dirs" in text
+    esc = app.session.escapability(GOAL, max_step=0.4)
+    assert esc.reach.shape[0] == 2 * app.session.dof + 32   # ±axis dirs + randoms
+    assert esc.max_reach > 0.0
+    assert len(esc.per_joint()) == app.session.dof
+    app.session.goal = None
+
+
 def test_app_ik_branch_picker(app: StudioApp) -> None:
     app.set_config(GOAL)
     app.ik.snap_gizmo()  # gizmo at a reachable pose (the current EE pose)

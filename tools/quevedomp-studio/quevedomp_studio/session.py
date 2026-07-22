@@ -118,6 +118,36 @@ class TimedTrajectory:
         return (1.0 - a) * self.positions[k] + a * self.positions[k + 1]
 
 
+@dataclass
+class Escapability:
+    """Result of probing how far the robot can move away from a (collision-free) config before
+    colliding — the "is this goal wedged?" diagnostic. `reach[k]` is the largest collision-free
+    step (rad) along direction k (axis directions ±jN first, then random directions)."""
+
+    q: np.ndarray          # the probed config
+    labels: list           # per-direction label ("+j3", "-j3", "rand", …)
+    reach: np.ndarray      # (D,) largest collision-free step per direction (rad)
+    ladder: np.ndarray     # (L,) step magnitudes tested
+    dof: int
+    max_step: float
+
+    @property
+    def max_reach(self) -> float:
+        return float(self.reach.max()) if self.reach.size else 0.0
+
+    @property
+    def best_label(self) -> str:
+        return self.labels[int(np.argmax(self.reach))] if self.reach.size else "—"
+
+    def n_free_at(self, threshold: float) -> int:
+        """How many probed directions stay collision-free for at least `threshold` rad."""
+        return int((self.reach >= threshold).sum())
+
+    def per_joint(self) -> list:
+        """(joint_index, +reach, -reach) for the axis directions (first 2·dof entries)."""
+        return [(i, float(self.reach[2 * i]), float(self.reach[2 * i + 1])) for i in range(self.dof)]
+
+
 class StudioSession:
     """Robot + environment + planning state behind the studio UI."""
 
@@ -223,6 +253,55 @@ class StudioSession:
         return self.scene.query(
             self.robot, self.q if q_at is None else np.asarray(q_at, dtype=float), opts, self._ws
         )
+
+    def escapability(
+        self,
+        q_probe: np.ndarray,
+        *,
+        max_step: float = 0.5,
+        n_levels: int = 16,
+        n_random: int = 32,
+        seed: int = 0,
+    ) -> Escapability:
+        """From a collision-free config, measure the largest collision-free step in each of the
+        2·dof axis directions (±jN) plus `n_random` random directions, testing a ladder of
+        `n_levels` magnitudes up to `max_step`. All probe points go through ONE query_batch.
+
+        Reveals a wedged goal: if the robot cannot move meaningfully from a free config in ANY
+        direction, that config is an isolated pocket — no sampling planner can grow a tree out of
+        it (RRT's goal tree stays a lone root; PRM lands no nodes near it). The largest reach is
+        also a good upper bound for a useful RRT max_extension near the goal."""
+        q_probe = np.asarray(q_probe, dtype=float)
+        dof = self.dof
+        ladder = np.linspace(0.0, max_step, n_levels + 1)[1:]  # (L,), exclude 0
+        dirs, labels = [], []
+        for i in range(dof):
+            e = np.zeros(dof)
+            e[i] = 1.0
+            dirs.append(e.copy())
+            labels.append(f"+j{i}")
+            dirs.append(-e)
+            labels.append(f"-j{i}")
+        rng = np.random.default_rng(seed)
+        for _ in range(n_random):
+            v = rng.standard_normal(dof)
+            nrm = float(np.linalg.norm(v))
+            if nrm > 0:
+                dirs.append(v / nrm)
+                labels.append("rand")
+        dirs_arr = np.array(dirs)  # (D, dof)
+        pts = q_probe[None, None, :] + ladder[None, :, None] * dirs_arr[:, None, :]  # (D, L, dof)
+        flat = np.ascontiguousarray(pts.reshape(-1, dof))
+        res = self.scene.query_batch(self.robot, flat, self.query_options, self._ws)
+        incol = np.asarray(res.in_collision).reshape(len(dirs), len(ladder)).astype(bool)
+
+        # Largest collision-free prefix per direction: reach = ladder[first_collision - 1] (0 if the
+        # very first step collides; full max_step if the whole ladder is free).
+        any_col = incol.any(axis=1)
+        first_col = incol.argmax(axis=1)  # meaningful only where any_col
+        reach = np.full(len(dirs), float(ladder[-1]))
+        reach[any_col] = np.where(first_col[any_col] == 0, 0.0, ladder[first_col[any_col] - 1])
+        return Escapability(q_probe, labels, reach, ladder, dof, max_step)
 
     def solve_ik(
         self,
@@ -510,10 +589,14 @@ class StudioSession:
         connection_radius: float = 0.0,
         seed: int = 0,
         smooth: bool = True,
+        export_roadmap: bool = False,
         force: bool = False,
     ):
         """Build (once) and cache the PRM roadmap over the current static scene; returns its
-        PrmBuildStats. Invalidated whenever an obstacle changes. The heavy fat-batch phase."""
+        PrmBuildStats. Invalidated whenever an obstacle changes. The heavy fat-batch phase.
+
+        export_roadmap copies the node/edge/component geometry into the stats for the studio's
+        roadmap debug view (component COUNTS come back regardless)."""
         if self._prm is not None and not force:
             return self._prm_stats
         params = q.PrmParams()
@@ -524,6 +607,7 @@ class StudioSession:
         params.collision = self.query_options
         params.seed = seed
         params.smooth = smooth
+        params.export_roadmap = export_roadmap
         if self.planner_params.max_link_sweep > 0:
             params.max_link_sweep = self.planner_params.max_link_sweep
             params.lever_weights = self.lever_weights()

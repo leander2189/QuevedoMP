@@ -177,6 +177,10 @@ class StudioApp:
         """Synchronous PRM build-if-needed + query."""
         return self.plan.query_roadmap_now()
 
+    def probe_escapability_now(self):
+        """Synchronous goal-escapability probe."""
+        return self.plan.probe_escapability_now()
+
     def play(self, blocking: bool = False, duration: Optional[float] = None) -> None:
         self.trajectory.play(blocking=blocking, duration=duration)
 
