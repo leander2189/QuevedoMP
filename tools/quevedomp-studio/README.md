@@ -46,8 +46,12 @@ the *Session* panel stays global. Each mode also controls what the 3D view empha
   or *goal = IK gizmo pose*), timeout/seed/smoothing; *max link sweep* (mm, Task 3.3d P3) gives
   the workspace-bounded edge guarantee. Debug views live here: *record exploration tree* draws
   the RRT trees as EE line clouds (R2), and *Debug: clearance heatmap* (R3) builds the voxel SDF
-  (GPU JFA when present) and sweeps a slice heatmap. Obstacle edits mark built roadmap/field
-  status lines **STALE**.
+  (GPU JFA when present) and sweeps a slice heatmap. *Debug: goal escapability* measures how far
+  the robot can move away from the goal (the "is the goal wedged?" check), and the RRT-Connect
+  folder exposes *extension step* / *goal bias*. Obstacle edits mark built roadmap/field status
+  lines **STALE**. For hard motions, see
+  [../../docs/tutorials/rrt-tuning.md](../../docs/tutorials/rrt-tuning.md) — a what-you-see →
+  which-knob guide driven by the probe and the tree view.
 - **Trajectory** — after a plan: set accel / tip-speed / tip-accel / jerk caps and
   **Parameterize** (Task 3.4; jerk-certified when capped); *Refine (CHOMP polish)* runs the R4
   refiner over the last plan with its own knob set (never worse than its re-certified seed);
