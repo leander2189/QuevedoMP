@@ -11,11 +11,21 @@
 // buffer growth) before the timed repetitions — so we measure the steady-state RRT hot path, not
 // first-call overhead. Robot-vs-self is off by default to isolate the GPU robot-vs-environment path
 // that OptiX actually accelerates (a second pass turns it on to show full-query cost).
+//
+//   Usage: bench_collision                 # the synthetic triangle-count sweep (default)
+//          bench_collision <mesh> [scale]  # one REAL mesh from disk as the environment
+//
+// The second form is the "does the synthetic wall predict a real high-poly part?" check: it runs the
+// low-poly box baseline (to pin this machine and this session) and then the loaded mesh, so the
+// file's numbers sit in the same table as the procedural sweep. `scale` is a uniform factor applied
+// to the vertices, because STL carries no unit metadata: a millimetre-authored file needs 0.001
+// (load_mesh only honors units for the formats that record them, e.g. COLLADA).
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <memory>
 #include <span>
@@ -29,6 +39,7 @@
 #include "quevedomp/collision/collision_scene.hpp"
 #include "quevedomp/collision/geometry.hpp"
 #include "quevedomp/collision/types.hpp"
+#include "quevedomp/core/mesh_io.hpp"
 #include "quevedomp/core/rng.hpp"
 #include "quevedomp/core/types.hpp"
 #include "quevedomp/kinematics/fk.hpp"
@@ -124,6 +135,34 @@ SceneDescription make_mesh_env(int target_tris) {
   return env;
 }
 
+// The environment as ONE mesh loaded from disk, uniformly scaled. Unlike the procedural wall this
+// is whatever geometry the file holds — arbitrary topology, uneven triangle density, its own world
+// placement — which is the point: it is the reality check on the synthetic sweep. The bounding box is
+// printed because placement is what sets the collision fraction, and a mesh authored in the wrong
+// units (STL records none) then shows up here as a box a thousand times too big, instead of as a
+// mysteriously all-free benchmark.
+SceneDescription make_file_mesh_env(const std::string &path, double scale) {
+  Mesh m = load_mesh(path);
+  if (scale != 1.0)
+    for (Eigen::Vector3d &v : m.vertices)
+      v *= scale;
+
+  Eigen::Vector3d lo = Eigen::Vector3d::Constant(1e30), hi = Eigen::Vector3d::Constant(-1e30);
+  for (const Eigen::Vector3d &v : m.vertices) {
+    lo = lo.cwiseMin(v);
+    hi = hi.cwiseMax(v);
+  }
+  std::printf("mesh %s: %zu triangles, %zu vertices, scale %g\n", path.c_str(),
+              m.triangles.size(), m.vertices.size(), scale);
+  std::printf("  bbox min [%.3f %.3f %.3f] max [%.3f %.3f %.3f] size [%.3f %.3f %.3f] (m)\n",
+              lo.x(), lo.y(), lo.z(), hi.x(), hi.y(), hi.z(), hi.x() - lo.x(), hi.y() - lo.y(),
+              hi.z() - lo.z());
+
+  SceneDescription env;
+  env.objects.push_back({"file_mesh", std::move(m), Transform::Identity()});
+  return env;
+}
+
 // Same triangle budget, but a small (0.3x0.3 m) dense panel off in one corner that only the extended
 // arm reaches — so the base/shoulder/upper links stay far from it. This is where a robot-link
 // broadphase cull can skip most links' rays; contrast its A/B with make_mesh_env.
@@ -175,11 +214,14 @@ void bench_env(const char *label, const std::shared_ptr<const RobotModel> &model
 
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
   if (!optix_available()) {
     std::printf("OptiX backend not built — configure with the bench-optix preset.\n");
     return 1;
   }
+
+  const std::string mesh_path = argc > 1 ? argv[1] : "";
+  const double mesh_scale = argc > 2 ? std::atof(argv[2]) : 1.0;
 
   const auto model = RobotModel::from_urdf(read_text(fixtures() + "/robots/ur5.urdf"));
   const RobotInstance robot(model);
@@ -201,6 +243,17 @@ int main() {
     std::printf("host FK floor (fk_all over %zu configs): %.3f ms total, %.3f us/config\n",
                 pool.size(), ms, ms * 1e3 / pool.size());
     (void)sink;
+  }
+
+  // A mesh on the command line replaces the sweep: the box baseline pins this machine and session,
+  // then the real file gets the same table. Batch 10000 is in the list here — a multi-million-triangle
+  // part is exactly the fat-batch regime the sweep's 500k wall was standing in for.
+  if (!mesh_path.empty()) {
+    bench_env("LOW-POLY BASELINE (boxes)", model, robot, make_box_env(), pool, {1, 10, 100, 1000},
+              20000);
+    bench_env("FILE MESH", model, robot, make_file_mesh_env(mesh_path, mesh_scale), pool,
+              {1, 10, 100, 1000, 10000}, 20000);
+    return 0;
   }
 
   std::printf("Sweeping ENVIRONMENT triangle count — the acceleration-structure lever that "
