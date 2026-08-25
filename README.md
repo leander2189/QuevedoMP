@@ -44,6 +44,51 @@ docker run --rm -v "$PWD":/work -w /work quevedomp-cuda bash -lc \
 
 VS Code users: "Reopen in Container" uses `.devcontainer/` directly.
 
+## Studio (GPU)
+
+`quevedomp-studio` is the interactive planning IDE (viser + rerun; ADR-016, working modes in
+ADR-021): scene editing, IK gizmo, planning, trajectory playback. Run it from the **`release-py`**
+preset — Release, with CUDA + OptiX + the Python bindings on. A Debug build works but is ~9×
+slower, which is not a useful thing to look at.
+
+```bash
+# 1. Build the bindings once:
+docker run --rm --gpus all -v "$PWD":/work -w /work quevedomp-cuda bash -lc \
+  "cmake --preset release-py && cmake --build --preset release-py"
+
+# 2. Launch (native Linux) — OptiX comes from the host driver automatically:
+docker run --rm --gpus all -p 8080:8080 -v "$PWD":/work -w /work quevedomp-cuda bash -lc \
+  "PYTHONPATH=build/release-py/bindings/python:tools/quevedomp-studio \
+   python3 -m quevedomp_studio --fixture rbrobout_inlet"
+#   -> open http://localhost:8080
+
+# 3. Launch on WSL2 — same, plus the extracted OptiX runtime (see note below):
+docker run --rm --gpus all -p 8080:8080 -v "$PWD":/work -w /work \
+  -v "$PWD/.devcontainer/wsl-optix:/opt/wsl-optix:ro" quevedomp-cuda bash -lc \
+  "export LD_LIBRARY_PATH=/opt/wsl-optix:/usr/lib/wsl/lib:\$LD_LIBRARY_PATH && \
+   PYTHONPATH=build/release-py/bindings/python:tools/quevedomp-studio \
+   python3 -m quevedomp_studio --fixture rbrobout_inlet"
+```
+
+The file
+`d:\Inventos\quevedoMP\tests\fixtures\meshes\dummy_hires.stl` maps to `/work/tests/fixtures/meshes/dummy_hires.stl` in the studio.
+
+
+`--fixture` takes `ur5`, `ur10`, `panda`, `iiwa`, `irb2400`, `rbrobout`, or `rbrobout_inlet` (the
+two `rbrobout` cells load their SRDF ACM automatically); `--load sessions/benchmark.qmps` reopens
+a saved session instead. `--host`/`--port` default to `0.0.0.0:8080`, which is what makes the
+`-p 8080:8080` publish work.
+
+> **WSL only:** the `wsl-optix` mount and the `LD_LIBRARY_PATH` prefix in step 3 exist because WSL
+> does not expose `libnvoptix.so.1` to containers the way a native Linux driver does. Produce that
+> directory once with `.devcontainer/setup-wsl-optix.sh`, and re-run it if the host driver's major
+> version changes — see [`docs/tutorials/testing.md`](docs/tutorials/testing.md). Nothing else in
+> the command differs between WSL and native Linux.
+
+> **Mount the repo at `/work`.** A CMake cache is not relocatable: `build/release-py` records
+> `/work` as its source directory, so mounting the repo anywhere else makes CMake reject the cache
+> and reconfigure from scratch.
+
 ## Dependencies
 
 CPU deps come from the container's system `apt` (build-plan deviation D2), found via CMake:
