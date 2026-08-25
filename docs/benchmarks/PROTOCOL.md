@@ -1,111 +1,133 @@
 # QuevedoMP Benchmark Protocol
 
-> Single source of truth for every performance claim this project makes (build-plan
-> amendment M2). Any number quoted in a README, paper, or exit gate must be reproducible
-> by following this document. Changes to this protocol go through PR review like code.
+> Single source of truth for every performance claim this project makes. Any number quoted in a
+> README, roadmap record, design doc, ADR or sales material must be reproducible by following this
+> document. Changes to this protocol go through review like code.
+
+> **Revised 2026-08-25.** The original version specified a MoveIt 2 baseline container, three
+> synthetic scene fixtures and a "5× faster than MoveIt" exit gate. None of that was ever built —
+> all four paths it referenced were dangling — and the comparison is no longer the plan. This
+> revision documents the instruments that actually exist and are actually used. The v0 build plan
+> (`docs/QuevedoMP-BUILD-PLAN.md`) keeps the original text as a historical record; do not treat its
+> gate language as live.
 
 ## 1. The claim under test
 
-**QuevedoMP plans faster than MoveIt 2 in complex environments with high-polygon meshes,
-in quasi-static scenes**, at equal or better success rate.
+**QuevedoMP plans quickly in complex, high-polygon, quasi-static robot cells**, deterministically,
+with an exact collision certificate.
 
-Honest-positioning notes (spec §0.5): we do not claim superiority over cuRobo, and we do
-not claim wins on low-poly/primitive scenes — on those, well-tuned CPU checking may win
-and `BackendHint::Auto` may select the FCL backend.
+Honest positioning, and the measurements that force it:
 
-## 2. Benchmark axes
+- **We do not claim superiority over cuRobo**, and we do not claim wins on low-poly or
+  primitive-only scenes. On those, well-tuned CPU checking wins and `BackendHint::Auto` may
+  correctly select FCL.
+- **Environment polygon count is close to free, and must not be sold as the differentiator on its
+  own.** Per-config cost is 7.3 µs on the low-poly inlet and 7.6 µs on the 7.3M-triangle hires
+  variant — 4% for 1800× the triangles. What high-poly geometry actually buys us is that it does
+  *not* fall over; that is a robustness claim, not a speed claim.
+- **A GPU-versus-CPU speedup number is meaningless without its core budget.** On 16 idle cores FCL
+  wins; at one thread OptiX wins 3.09× on the same scene. Always state the thread count.
+- No claim about **success rate** or **narrow-passage solvability** is a performance claim. Those
+  belong to the planner (R8), not to the backends, and must be reported separately.
 
-### 2.1 Scenes (fixtures — build-plan Task B.1)
+## 2. The instruments
 
-| Fixture | Content | Triangles | Watertight |
-|---|---|---|---|
-| `industrial-cell` | scanned/CAD robot cell: fences, conveyor, fixtures | ≥ 500k | mostly |
-| `dense-shelving` | shelving unit with high-res scanned objects | ≥ 300k | mixed |
-| `cluttered-table` | tabletop, scanned clutter (YCB-scan class) | ≥ 200k | **at least one non-watertight mesh** |
+Three, in decreasing order of how much a number from them means.
 
-Provenance + licenses in `tests/fixtures/scenes/PROVENANCE.md`. Fixtures are versioned;
-results must record the fixture version (file content hash).
+### 2.1 End-to-end plan attribution — `session_profile.py` (the number that matters)
 
-### 2.2 Robot and problems
+A versioned `.qmps` session planned headless, reporting `PlanningStats`. This is the only
+instrument that measures what a user experiences.
 
-- Robot: **UR5** (Phase 1 fixture URDF). Optional secondary: Franka Panda (7-DOF).
-- Per scene: **30 planning problems** (start/goal joint configs), generated once with a
-  recorded seed, stored as a fixture (`tests/benchmarks/problems/*.yaml`). Mix:
-  ~1/3 easy (large clearance), ~1/3 cluttered, ~1/3 narrow-passage.
-- Identical problems are fed to both planners. No per-problem tuning on either side.
+```bash
+PYTHONPATH=build/release-py/bindings/python:tools/quevedomp-studio \
+  python3 examples/python/session_profile.py sessions/benchmark.qmps \
+    --seeds 8 [--backend keep|fcl|optix|auto] [--timeout S] [--sweep M]
+```
 
-### 2.3 Systems compared
+Reference problem: **`sessions/benchmark.qmps`** (versioned; `rbrobout_inlet`, joint goal, seed 8).
+It reports total / planner / collision ms, config count, and the batch-size histogram. Report all
+of them — a plan that got faster by checking fewer configs is a different result from one that got
+faster per config.
 
-| System | Configuration |
-|---|---|
-| MoveIt 2 baseline | RRTConnect (OMPL default), default simplification, scene loaded from the same meshes, single-threaded planning. Container: `benchmarks/moveit-baseline/` (Task B.3). |
-| QuevedoMP / FCL | `RrtConnectPlanner` + `ShortcutSmoother`, FCL backend |
-| QuevedoMP / OptiX | same, OptiX backend (Phase 2b+) |
+### 2.2 Collision microbenchmarks — `bench_collision`
 
-Termination criteria must match: same planning timeout (default **5 s**), success =
-collision-free path validated at the protocol resolution (below).
+FCL vs OptiX `query_batch` latency and throughput across batch sizes, on a UR5.
+
+```bash
+./build/bench-optix/bench_collision                 # synthetic triangle-count sweep
+./build/bench-optix/bench_collision <mesh> [scale]  # one real mesh from disk as the environment
+```
+
+The synthetic sweep is the acceleration-structure lever (48 tris → 500k). The file-mesh form is the
+reality check on it. `scale` exists because STL records no unit metadata.
+
+### 2.3 Cost decomposition — `bench_dtc`
+
+The instrument that answers *where the time goes*, on a real industrial cell rather than a
+synthetic wall. Times the same batch under four combinations — floor / env-only / self-only / full
+— so robot-vs-self and robot-vs-env can be read off directly.
+
+```bash
+./build/bench-optix/bench_dtc [mt_part|inlet]
+```
+
+**Read `D` against `B` and `C`, never against the isolated deltas.** The passes early-out into one
+another, so the components are not additive (measured `D/sum = 0.84`). This is the mistake that
+made "GPU collision checking" look like the top priority for a year; see
+[`../QuevedoMP-R10-DESIGN.md`](../QuevedoMP-R10-DESIGN.md) §1.
 
 ## 3. Metrics
 
-### 3.1 End-to-end planning (Phase 3a gate)
+### 3.1 End-to-end (per §2.1)
 
-Per scene, over the 30 problems × **10 seeds** each (seeds recorded):
+- Total plan wall time (plan + smooth); time parameterization reported separately.
+- **Collision ms and config count**, always together.
+- Batch-size histogram — a planner that issues small batches is a planner that cannot use a GPU.
+- Success within the timeout, and path length (joint-space L2) as the guard against fast garbage.
+- Scene build time and `move_object` update latency, reported as their own numbers, never
+  amortized into query time.
 
-- **p50 / p95 plan wall time** (plan + smooth; time parameterization reported separately).
-- **Success rate** within the timeout.
-- **Path length** (joint-space L2) — guards against "fast but garbage" paths.
-- Scene **load/build time** (one-time) and **update latency**: `move_object` on one object
-  + first subsequent query, p50/p95 — this is the quasi-static story. Budget: ≤ 100 ms on
-  the largest fixture.
+### 3.2 Collision (per §2.2, §2.3)
 
-**Phase 3a exit gate:** QuevedoMP p50 ≥ **5×** faster than the MoveIt baseline on each
-fixture, success rate ≥ baseline's.
-
-### 3.2 Collision microbenchmarks (Phase 2a/2b gates)
-
-Boolean `query_batch` on each fixture, configs drawn from the recorded problem seeds:
-
-- **Small-batch latency** (what an RRT actually sees): wall time per `query_batch` at
-  batch sizes **10 / 50 / 100**, p50/p95 over 1000 calls, single thread, one warm
-  `Workspace`.
-- **Bulk throughput**: configs/sec at batch 10k (the spec's ≥ 5× FCL number).
-- **Crossover point**: smallest batch size where OptiX beats FCL on each fixture —
-  this calibrates `BackendHint::Auto`.
-
-### 3.3 Differential quality (Phase 2b, §4.6)
-
-Reported alongside, from the differential harness: out-of-band disagreements (must be 0),
-ambiguous (in-band) fraction.
+- Per-batch latency at 1 / 10 / 100 / 1000 / 10000, both backends.
+- Bulk throughput (configs/sec) at batch 10000.
+- **Thread scaling**: the same table at `OMP_NUM_THREADS=1`. Without it a backend comparison is
+  unfalsifiable — see §1.
+- The four-way decomposition with its collision fractions and the anatomy line (collision shapes,
+  checked self-pairs after the ACM, triangles per side).
 
 ## 4. Methodology rules
 
-1. **Hardware is recorded** with every result: CPU model, GPU model, driver, RAM, power
-   profile (laptops: plugged in, performance mode; this dev box: RTX 2000 Ada laptop GPU).
-2. **Warmup:** discard the first 3 runs of any timed loop (JIT, AS builds, allocator,
-   GPU clocks). Report steady-state. AS/scene build time is its own metric, never hidden
-   in query time — and never amortized away silently.
-3. **Releases builds only** (`release` preset; baseline container built `-O3`).
-   Sanitizer builds are never benchmarked.
-4. **Same machine, same session** for any A-vs-B comparison. No cross-machine comparisons.
-5. **Seeds recorded** for every stochastic component (problems, planner); results files
-   include them.
-6. **Results land in-repo** as JSON under `tests/benchmarks/results/` with date, git SHA,
-   fixture hashes. Regression alert threshold: > 10% on any §3.1/§3.2 metric (spec §8).
-7. **Edge-validation resolution** is part of the protocol, not a tuning knob: both systems
-   validate at the same joint-space resolution (default 0.05 rad max joint step). Changing
-   it is a protocol change.
+1. **Hardware is recorded** with every result: CPU core count, GPU model, driver version. Laptops:
+   plugged in, performance mode.
+2. **Warm up, then take the minimum of several trials.** The minimum rejects one-off scheduling
+   jitter that inflates a mean. Acceleration-structure and scene build time is its own metric,
+   never hidden inside query time.
+3. **Release builds only** (`bench-optix` or `release-py`). Sanitizer and Debug builds are never
+   benchmarked — Debug is ~9× slower.
+4. **Same machine, same session** for any A-vs-B comparison. No cross-machine comparisons, and no
+   comparing against a number recorded on another day.
+5. **A cold machine is not a benchmark.** Contention from anything starting up in the background
+   will silently produce a plausible-looking wrong number; re-run until consecutive runs agree.
+6. **Seeds recorded** for every stochastic component (problems, planner, sampling).
+7. **Edge-validation resolution is part of the protocol, not a tuning knob.** Two runs at different
+   `edge_resolution` or `max_link_sweep` are not comparable. When comparing, state the
+   equal-guarantee setting; changing it is a protocol change.
+8. **State the thread count** on every backend comparison (§1).
 
-## 5. Reporting template
+## 5. Where numbers are recorded
 
-```json
-{
-  "date": "", "git_sha": "", "machine": {"cpu": "", "gpu": "", "driver": ""},
-  "fixture": {"name": "", "hash": "", "triangles": 0},
-  "system": "moveit-baseline | quevedomp-fcl | quevedomp-optix",
-  "metrics": { "plan_ms_p50": 0, "plan_ms_p95": 0, "success_rate": 0,
-               "path_len_mean": 0, "scene_update_ms_p50": 0,
-               "batch_lat_us": {"10": 0, "50": 0, "100": 0},
-               "bulk_cfg_per_s": 0 },
-  "seeds": [], "notes": ""
-}
-```
+There is no results database; numbers live next to the decision they informed.
+
+| kind | home |
+|---|---|
+| A feature's measured outcome | its roadmap row in [`../QuevedoMP-ROADMAP-v1.md`](../QuevedoMP-ROADMAP-v1.md) |
+| The reasoning behind a design | the R-design doc's "numbers to record" section |
+| A ratified decision's evidence | the ADR in [`../architecture/`](../architecture/) |
+| Fixture properties and baselines | that fixture's `PROVENANCE.md` |
+
+Every recorded number carries: date, git SHA, machine, and the exact command line.
+
+Regression threshold: **>10% on any §3 metric** is a finding, not noise, and needs an explanation
+before it is accepted.
