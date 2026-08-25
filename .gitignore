@@ -34,6 +34,7 @@ Thumbs.db
 
 # Python
 __pycache__/
+.pytest_cache/
 *.pyc
 .venv/
 venv/
@@ -55,9 +56,10 @@ timeout-*
 oom-*
 *.rrd
 
-# R1 high-poly fixtures (Leandro's Blender exports) — too large for plain git (366 MB STL,
-# 179 MB session); regenerate from DTC_Test.blend or move to LFS if sharing is ever needed.
+# High-poly fixtures (Leandro's Blender exports) — too large for plain git (366 MB and 219 MB
+# STLs, 179 MB session); regenerate from DTC_Test.blend or move to LFS if sharing is ever needed.
 tests/fixtures/robots/meshes/dtc_test_inlet/meshes/inlet_mesh_hires.stl
+tests/fixtures/meshes/dummy_hires.stl
 sessions/inlet_hires.qmps
 *.blend
 *.blend1
