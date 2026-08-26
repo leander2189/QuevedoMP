@@ -32,7 +32,8 @@ the OptiX backend adds a GPU suite and a three-way differential check.
 
 - Reference plan (`sessions/benchmark.qmps`, 7-DOF industrial cell): **0.35 s**, down from 57.9 s
   over the course of v0 optimization.
-- Collision throughput: **1.5M configs/s** on a 4.4M-triangle environment.
+- Collision throughput: **1.4M configs/s** on a 4.4M-triangle environment (FCL, batch 10000,
+  16 threads).
 - Environment polygon count is nearly free: **7.3 µs/config** low-poly vs **7.6 µs/config** at 7.3M
   triangles.
 
@@ -61,7 +62,7 @@ engineering questions stay open.
 
 | # | Item | Size | Detail |
 |---|---|---|---|
-| **1** | **Sales pitch** — a technical one-pager for robotics engineers evaluating QuevedoMP against MoveIt, cuRobo or in-house code. Architecture, determinism, the exact-certificate guarantee, measured numbers, honest limitations, comparison table. Written so a deck can be cut straight from it, with image and video suggestions inline. | S | §3.1 |
+| **1** | [**Sales pitch**](docs/PITCH.md) — technical one-pager for engineers evaluating QuevedoMP against MoveIt, cuRobo or in-house code, with inline image/video suggestions and a 10-slide deck cut. | S | ✅ 2026-08-25 — **blocked on the license** before it leaves the building, see §3.1 |
 | **2** | **C++ API documentation** — Doxygen, built by CMake target, output gitignored. Public headers only. | S | §3.2 |
 | **3** | **Python API documentation** — generated from the nanobind docstrings, same build step, one published surface with the C++ docs. | S | §3.3 |
 | **4** | **Worked examples** — a small set of C++ and Python programs a newcomer can read end to end: load a robot, add obstacles, plan, parameterize, inspect. Distinct from the existing `examples/` visualizers, which are development tools. | S–M | §3.4 |
@@ -79,9 +80,17 @@ engineering questions stay open.
 Items 5–10 have their own design documents, linked above. Items 1–4 do not yet, so their scope is
 recorded here.
 
-### 3.1 Sales pitch
+### 3.1 Sales pitch — delivered, with one blocker
 
-Audience: **technical buyer / integrator** — a robotics engineer choosing a planning stack.
+Written: [`docs/PITCH.md`](docs/PITCH.md). Audience: **technical buyer / integrator** — a robotics
+engineer choosing a planning stack.
+
+> **Blocker before it goes outside: [`LICENSE`](LICENSE) says "not yet finalized".** A technical
+> buyer opens that file, and in procurement an unsettled license is a hard stop. It is also the one
+> place the project would otherwise have an unambiguous advantage to state against cuRobo. Settle it
+> before the deck leaves the building.
+
+The constraints it was written under, kept here because they bind any revision:
 
 - Lead with what is architecturally different: ROS-free core, one backend interface, determinism
   per seed, batch-first collision, an exact certificate on every returned path.
