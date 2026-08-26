@@ -215,3 +215,52 @@ endif()
 if(QUEVEDOMP_WITH_PYTHON)
   add_subdirectory(bindings/python)
 endif()
+
+# ---- API documentation (roadmap item 2) ----------------------------------------------------
+# Doxygen over the PUBLIC headers only. Never part of ALL: docs are built on request
+# (`cmake --build <dir> --target docs`), so nobody pays for them in an ordinary build. Output lands
+# in the build tree, which is already gitignored — generated documentation is not committed.
+option(QUEVEDOMP_BUILD_DOCS "Add the `docs` target (Doxygen API reference)" ON)
+if(QUEVEDOMP_BUILD_DOCS)
+  find_package(Doxygen QUIET)
+  if(NOT DOXYGEN_FOUND)
+    # Not an error: most builds do not want docs. Say how to get the target rather than failing.
+    message(STATUS "Doxygen not found — `docs` target unavailable (apt install doxygen graphviz)")
+  else()
+    # The comment filter is a Python script; find an interpreter independently of the bindings
+    # option, since the docs must build in a CPU-only configuration too.
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    set(_qmp_py "${Python3_EXECUTABLE}")
+    if(NOT _qmp_py)
+      set(_qmp_py "python3")
+    endif()
+
+    set(DOXYGEN_INPUT_DIR       "${CMAKE_CURRENT_SOURCE_DIR}/include/quevedomp")
+    set(DOXYGEN_STRIP_FROM_PATH "${CMAKE_CURRENT_SOURCE_DIR}/include")
+    set(DOXYGEN_OUTPUT_DIR      "${CMAKE_CURRENT_BINARY_DIR}/docs/api")
+    set(DOXYGEN_MAINPAGE        "${CMAKE_CURRENT_SOURCE_DIR}/docs/doxygen/mainpage.md")
+    set(DOXYGEN_FILTER_CMD      "${_qmp_py} ${CMAKE_CURRENT_SOURCE_DIR}/docs/doxygen/comment-filter.py")
+    if(DOXYGEN_DOT_FOUND)
+      set(DOXYGEN_HAVE_DOT YES)
+    else()
+      set(DOXYGEN_HAVE_DOT NO)
+    endif()
+
+    # Stamp the build with the commit being documented, so a published reference can be traced back
+    # to a tree. Falls back quietly outside a git checkout (release tarballs).
+    execute_process(COMMAND git -C "${CMAKE_CURRENT_SOURCE_DIR}" rev-parse --short HEAD
+                    OUTPUT_VARIABLE DOXYGEN_PROJECT_NUMBER OUTPUT_STRIP_TRAILING_WHITESPACE
+                    ERROR_QUIET)
+
+    set(_qmp_doxyfile "${CMAKE_CURRENT_BINARY_DIR}/Doxyfile")
+    configure_file("${CMAKE_CURRENT_SOURCE_DIR}/docs/doxygen/Doxyfile.in" "${_qmp_doxyfile}" @ONLY)
+
+    add_custom_target(docs
+      COMMAND ${CMAKE_COMMAND} -E make_directory "${DOXYGEN_OUTPUT_DIR}"
+      COMMAND "${DOXYGEN_EXECUTABLE}" "${_qmp_doxyfile}"
+      COMMAND ${CMAKE_COMMAND} -E echo "API reference: ${DOXYGEN_OUTPUT_DIR}/html/index.html"
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      COMMENT "Generating the C++ API reference with Doxygen"
+      VERBATIM)
+  endif()
+endif()

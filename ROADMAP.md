@@ -63,7 +63,7 @@ engineering questions stay open.
 | # | Item | Size | Detail |
 |---|---|---|---|
 | **1** | [**Sales pitch**](docs/PITCH.md) — technical one-pager for engineers evaluating QuevedoMP against MoveIt, cuRobo or in-house code, with inline image/video suggestions and a 10-slide deck cut. | S | ✅ 2026-08-25 — **blocked on the license** before it leaves the building, see §3.1 |
-| **2** | **C++ API documentation** — Doxygen, built by CMake target, output gitignored. Public headers only. | S | §3.2 |
+| **2** | **C++ API documentation** — Doxygen over the public headers, `docs` CMake target, output in the build tree. | S | ✅ 2026-08-25 — §3.2 |
 | **3** | **Python API documentation** — generated from the nanobind docstrings, same build step, one published surface with the C++ docs. | S | §3.3 |
 | **4** | **Worked examples** — a small set of C++ and Python programs a newcomer can read end to end: load a robot, add obstacles, plan, parameterize, inspect. Distinct from the existing `examples/` visualizers, which are development tools. | S–M | §3.4 |
 | **5** | [**R8 — adaptive-step RRT-Connect**](docs/QuevedoMP-R8-DESIGN.md) | S–M | Per-node extension step sized from the local width of free space, so a tree rooted in a narrow pocket can crawl out where a single global step cannot. **The fix for the headline limitation.** Spec written 2026-07-22. |
@@ -105,12 +105,21 @@ The constraints it was written under, kept here because they bind any revision:
   colored by component; the clearance heatmap slice; a scrubbed trajectory with the velocity and
   jerk plots; a side-by-side of low-poly vs 4.4M-triangle scenes at the same per-config cost.
 
-### 3.2 C++ API documentation
+### 3.2 C++ API documentation — delivered
 
-Doxygen over `include/quevedomp/` only — the public surface. A CMake target (off by default, on in
-a docs preset), output to a gitignored directory. The nine public modules are `core`, `robot`,
-`kinematics`, `collision`, `clearance`, `planning`, `parameterization`, `capture`, `viz`. Header
-comments are already dense and written for readers; the job is mostly configuration, not authoring.
+`cmake --build <dir> --target docs` → 395 pages over the nine public modules, with class graphs.
+Config in [`docs/doxygen/`](docs/doxygen/); output goes to the build tree, so nothing generated is
+committed. `doxygen` and `graphviz` were added to the dev container.
+
+The one interesting problem: the headers are written to be read as source, in plain `//` comments,
+which Doxygen does not recognise at all — a straight run produces signatures with no prose.
+[`comment-filter.py`](docs/doxygen/comment-filter.py) rewrites them as it feeds Doxygen, so the
+source keeps no markup. It is careful about three cases that would otherwise produce *quietly wrong*
+documentation: the file-header block (would attach to the first struct in the file), trailing
+comments (would attach to the next declaration — 146 of them in the public headers), and section
+separators. Nine "unsupported xml/html tag" warnings remain and are deliberate: Doxygen renders
+those placeholders correctly, and escaping them makes the output worse. That was checked against
+generated HTML, not assumed.
 
 ### 3.3 Python API documentation
 

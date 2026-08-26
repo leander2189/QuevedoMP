@@ -1,0 +1,61 @@
+# QuevedoMP Doxygen configuration — configured by CMake into the build tree.
+#
+# Deliberately short: Doxygen supplies sane defaults for the ~300 tags not set here, and a minimal
+# file is one a human can still read. Every tag below is set because the default was wrong for us.
+#
+# Targets Doxygen 1.9.1 (the version apt ships on the container's base image). Do not add tags
+# introduced after 1.9.1 without checking — Doxygen warns on unknown tags rather than failing, so
+# a newer tag silently does nothing.
+
+PROJECT_NAME           = "QuevedoMP"
+PROJECT_NUMBER         = "@DOXYGEN_PROJECT_NUMBER@"
+PROJECT_BRIEF          = "ROS-free, GPU-accelerated motion planning for industrial robot arms"
+OUTPUT_DIRECTORY       = @DOXYGEN_OUTPUT_DIR@
+
+# The PUBLIC surface only. src/ is implementation; documenting it would bury the interface a user
+# actually programs against, which is the whole point of the reference.
+INPUT                  = @DOXYGEN_INPUT_DIR@ @DOXYGEN_MAINPAGE@
+FILE_PATTERNS          = *.hpp
+RECURSIVE              = YES
+STRIP_FROM_PATH        = @DOXYGEN_STRIP_FROM_PATH@
+STRIP_FROM_INC_PATH    = @DOXYGEN_STRIP_FROM_PATH@
+
+# The headers use plain `//` comments, which Doxygen does not recognise. The filter rewrites them
+# on the way in and leaves the source untouched — see comment-filter.py for what it handles.
+INPUT_FILTER           = "@DOXYGEN_FILTER_CMD@"
+JAVADOC_AUTOBRIEF      = YES
+MARKDOWN_SUPPORT       = YES
+USE_MDFILE_AS_MAINPAGE = @DOXYGEN_MAINPAGE@
+
+# Show the whole public surface, documented or not: a reference with holes in it sends the reader
+# to the header anyway, which defeats the purpose.
+EXTRACT_ALL            = YES
+EXTRACT_STATIC         = YES
+HIDE_UNDOC_MEMBERS     = NO
+SORT_MEMBER_DOCS       = NO
+SORT_BRIEF_DOCS        = NO
+
+# C++20. Doxygen's own parser needs help with the ones it cannot see through.
+BUILTIN_STL_SUPPORT    = YES
+PREDEFINED             = __cplusplus=202002L
+
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+HTML_OUTPUT            = html
+GENERATE_TREEVIEW      = YES
+DISABLE_INDEX          = NO
+
+HAVE_DOT               = @DOXYGEN_HAVE_DOT@
+DOT_IMAGE_FORMAT       = svg
+INTERACTIVE_SVG        = YES
+CLASS_GRAPH            = YES
+COLLABORATION_GRAPH    = NO
+INCLUDE_GRAPH          = NO
+INCLUDED_BY_GRAPH      = NO
+
+# Undocumented entities are expected (EXTRACT_ALL is on), so do not shout about them. Real problems
+# — a broken @ref, a parameter that does not exist — still warn.
+QUIET                  = YES
+WARN_IF_UNDOCUMENTED   = NO
+WARN_AS_ERROR          = NO
+WARN_LOGFILE           = @DOXYGEN_OUTPUT_DIR@/doxygen-warnings.log

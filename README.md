@@ -117,6 +117,22 @@ PYTHONPATH=build/release-py/bindings/python:tools/quevedomp-studio \
 ./build/bench-optix/bench_dtc inlet                 # where the time goes: self vs env vs floor
 ```
 
+## API reference
+
+Doxygen over the public headers. The target is never part of a normal build — ask for it:
+
+```bash
+cmake --preset dev-py                       # any preset works; docs need no GPU
+cmake --build build/dev-py --target docs
+#   -> build/dev-py/docs/api/html/index.html
+```
+
+Output lands in the build tree, so generated documentation is never committed. The headers use
+plain `//` comments, which Doxygen ignores; [`docs/doxygen/comment-filter.py`](docs/doxygen/comment-filter.py)
+rewrites them on the way in and leaves the source untouched. Run it on any header to see exactly
+what Doxygen will parse. `QUEVEDOMP_BUILD_DOCS=OFF` drops the target; without `doxygen` installed
+CMake just reports it as unavailable rather than failing.
+
 ## Documentation
 
 | | |
