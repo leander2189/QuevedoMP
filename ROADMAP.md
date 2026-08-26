@@ -152,7 +152,7 @@ These bind every item above. They are not negotiable per-feature.
 
 ## 6. History
 
-- [`QuevedoMP-SPEC.md`](QuevedoMP-SPEC.md) — the architecture specification.
+- [`docs/QuevedoMP-SPEC.md`](docs/QuevedoMP-SPEC.md) — the architecture specification.
 - [`docs/QuevedoMP-BUILD-PLAN.md`](docs/QuevedoMP-BUILD-PLAN.md) — the v0 build plan. **Frozen**:
   every item is either done-with-evidence or listed in §4. Historical record, not a live plan.
 - [`docs/QuevedoMP-ROADMAP-v1.md`](docs/QuevedoMP-ROADMAP-v1.md) — the post-v0 feature plan this

@@ -122,7 +122,7 @@ PYTHONPATH=build/release-py/bindings/python:tools/quevedomp-studio \
 | | |
 |---|---|
 | [ROADMAP.md](ROADMAP.md) | Current features, ordered plan, links to all design documents |
-| [QuevedoMP-SPEC.md](QuevedoMP-SPEC.md) | Architecture specification and module layout |
+| [docs/QuevedoMP-SPEC.md](docs/QuevedoMP-SPEC.md) | Architecture specification and module layout |
 | [docs/architecture/](docs/architecture/) | ADRs — the record of every significant decision |
 | [docs/tutorials/testing.md](docs/tutorials/testing.md) | Test suites, GPU tests, the WSL OptiX setup |
 | [docs/tutorials/rrt-tuning.md](docs/tutorials/rrt-tuning.md) | Narrow passages and planner tuning |
