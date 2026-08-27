@@ -119,23 +119,41 @@ PYTHONPATH=build/release-py/bindings/python:tools/quevedomp-studio \
 
 ## API reference
 
-Doxygen over the public headers. The target is never part of a normal build — ask for it:
+Doxygen over the public headers, plus the Python bindings. The target is never part of a normal
+build — ask for it:
 
 ```bash
-cmake --preset dev-py                       # any preset works; docs need no GPU
-cmake --build build/dev-py --target docs
-#   -> build/dev-py/docs/api/html/index.html
+# Build the reference (no GPU needed):
+docker run --rm -v "$PWD":/work -w /work quevedomp-cuda bash -lc \
+  "cmake --preset dev-py && cmake --build --preset dev-py --target docs"
 ```
 
+Then open **`build/dev-py/docs/api/html/index.html`** in a browser. On Windows that is
+`file:///D:/Inventos/quevedoMP/build/dev-py/docs/api/html/index.html` — the build tree is on the
+host, so no server is needed.
+
+> **The image needs `doxygen`.** It was added to `.devcontainer/Dockerfile` after the current image
+> was built, so rebuild once to pick it up — and pass the OptiX installer, or the rebuilt image
+> silently loses the GPU backend:
+> ```bash
+> docker build -t quevedomp-cuda \
+>   --build-arg OPTIX_INSTALLER=NVIDIA-OptiX-SDK-8.1.0-linux64-x86_64-35015278.sh .devcontainer
+> ```
+> Until then the configure still succeeds — it just prints `Doxygen not found` and skips the
+> target, so the build step fails with `unknown target 'docs'`.
+
 **C++ and Python in one site.** On a preset with the bindings on (`dev-py`, `release-py`) the
-nanobind type stub is documented alongside the headers, so each class page lists the C++ members
-first and the Python bindings after. A CPU-only preset gets the C++ half and says so.
+nanobind type stub is documented alongside the headers — 520 pages, where each class page lists the
+C++ members first and the Python bindings after. A CPU-only preset gets the C++ half (395 pages)
+and says so at configure time.
 
 Output lands in the build tree, so generated documentation is never committed. The headers use
 plain `//` comments, which Doxygen ignores; [`docs/doxygen/comment-filter.py`](docs/doxygen/comment-filter.py)
 rewrites them on the way in and leaves the source untouched. Run it on any header to see exactly
-what Doxygen will parse. `QUEVEDOMP_BUILD_DOCS=OFF` drops the target; without `doxygen` installed
-CMake just reports it as unavailable rather than failing.
+what Doxygen will parse. `QUEVEDOMP_BUILD_DOCS=OFF` drops the target entirely.
+
+Nine "unsupported xml/html tag" warnings in `docs/api/doxygen-warnings.log` are expected and
+harmless — Doxygen renders those angle-bracket placeholders correctly regardless.
 
 ## Documentation
 
