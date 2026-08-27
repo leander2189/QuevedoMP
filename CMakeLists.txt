@@ -240,6 +240,30 @@ if(QUEVEDOMP_BUILD_DOCS)
     set(DOXYGEN_OUTPUT_DIR      "${CMAKE_CURRENT_BINARY_DIR}/docs/api")
     set(DOXYGEN_MAINPAGE        "${CMAKE_CURRENT_SOURCE_DIR}/docs/doxygen/mainpage.md")
     set(DOXYGEN_FILTER_CMD      "${_qmp_py} ${CMAKE_CURRENT_SOURCE_DIR}/docs/doxygen/comment-filter.py")
+
+    # Python half (roadmap item 3): the nanobind type stub carries the full typed signatures and
+    # such docstrings as the bindings define, so Doxygen can document both languages in ONE site
+    # rather than us standing up a second toolchain for a 1600-line generated file.
+    #
+    # The stub is generated as `_native.pyi`, but nobody imports `quevedomp._native` — the package
+    # re-exports everything from `quevedomp`. Doxygen names Python entities after the FILE, so the
+    # stub is staged as `quevedomp.pyi` and the pages then read `quevedomp.RobotModel`, which is
+    # what a user actually types.
+    set(DOXYGEN_PYTHON_INPUT "")
+    set(_qmp_stage_cmds "")
+    if(QUEVEDOMP_WITH_PYTHON)
+      set(_qmp_pystage "${CMAKE_CURRENT_BINARY_DIR}/docs/pystub")
+      set(_qmp_stub "${CMAKE_CURRENT_BINARY_DIR}/bindings/python/quevedomp/_native.pyi")
+      set(DOXYGEN_PYTHON_INPUT "${_qmp_pystage}")
+      # Exists at configure time so Doxygen never warns about a missing INPUT, and re-staged on
+      # every run so the Python pages cannot silently document a stale binding. These run as the
+      # target's own first commands: add_custom_command(PRE_BUILD) is only genuinely "pre build"
+      # on Visual Studio — under Ninja it lands after the target's commands, which silently
+      # produced a C++-only site.
+      file(MAKE_DIRECTORY "${_qmp_pystage}")
+      list(APPEND _qmp_stage_cmds
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_qmp_stub}" "${_qmp_pystage}/quevedomp.pyi")
+    endif()
     if(DOXYGEN_DOT_FOUND)
       set(DOXYGEN_HAVE_DOT YES)
     else()
@@ -257,10 +281,18 @@ if(QUEVEDOMP_BUILD_DOCS)
 
     add_custom_target(docs
       COMMAND ${CMAKE_COMMAND} -E make_directory "${DOXYGEN_OUTPUT_DIR}"
+      ${_qmp_stage_cmds}
       COMMAND "${DOXYGEN_EXECUTABLE}" "${_qmp_doxyfile}"
       COMMAND ${CMAKE_COMMAND} -E echo "API reference: ${DOXYGEN_OUTPUT_DIR}/html/index.html"
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-      COMMENT "Generating the C++ API reference with Doxygen"
+      COMMENT "Generating the API reference with Doxygen"
       VERBATIM)
+
+    if(QUEVEDOMP_WITH_PYTHON)
+      # So `--target docs` works from a clean tree: the stub is built from the extension module.
+      add_dependencies(docs quevedomp_native_stub)
+    else()
+      message(STATUS "docs: C++ only (QUEVEDOMP_WITH_PYTHON is OFF — no Python stub to document)")
+    endif()
   endif()
 endif()

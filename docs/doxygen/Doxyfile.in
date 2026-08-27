@@ -14,15 +14,23 @@ OUTPUT_DIRECTORY       = @DOXYGEN_OUTPUT_DIR@
 
 # The PUBLIC surface only. src/ is implementation; documenting it would bury the interface a user
 # actually programs against, which is the whole point of the reference.
-INPUT                  = @DOXYGEN_INPUT_DIR@ @DOXYGEN_MAINPAGE@
-FILE_PATTERNS          = *.hpp
+#
+# DOXYGEN_PYTHON_INPUT is the nanobind type stub, staged under the name users import — it is empty
+# when the bindings are not built, so a CPU-only configuration still gets the C++ half.
+INPUT                  = @DOXYGEN_INPUT_DIR@ @DOXYGEN_MAINPAGE@ @DOXYGEN_PYTHON_INPUT@
+FILE_PATTERNS          = *.hpp *.pyi
+EXTENSION_MAPPING      = pyi=Python
 RECURSIVE              = YES
 STRIP_FROM_PATH        = @DOXYGEN_STRIP_FROM_PATH@
 STRIP_FROM_INC_PATH    = @DOXYGEN_STRIP_FROM_PATH@
 
 # The headers use plain `//` comments, which Doxygen does not recognise. The filter rewrites them
 # on the way in and leaves the source untouched — see comment-filter.py for what it handles.
-INPUT_FILTER           = "@DOXYGEN_FILTER_CMD@"
+#
+# FILTER_PATTERNS, not INPUT_FILTER: the filter must see C++ only. It happens to be a no-op on
+# Python (nothing there starts with `//`), but relying on that would be an accident waiting to
+# happen the first time a stub contains something that looks like a C++ comment.
+FILTER_PATTERNS        = *.hpp="@DOXYGEN_FILTER_CMD@"
 JAVADOC_AUTOBRIEF      = YES
 MARKDOWN_SUPPORT       = YES
 USE_MDFILE_AS_MAINPAGE = @DOXYGEN_MAINPAGE@

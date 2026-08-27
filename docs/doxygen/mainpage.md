@@ -35,6 +35,40 @@ Sharing one across threads is out-of-bounds undefined behaviour, not merely a wr
 to give an optimizer a gradient and a human a heatmap. A path is collision-free when a
 `CollisionScene` says so, and never on the strength of a clearance value.
 
+## The Python API
+
+The same library, through nanobind. Everything is re-exported from the `quevedomp` package, so
+`quevedomp.RobotModel` is the class documented here — `quevedomp._native`, where it physically
+lives, is an implementation detail you never import.
+
+```python
+import quevedomp as q
+model = q.RobotModel.from_urdf(open("robot.urdf").read())
+```
+
+**Both languages share one page per class.** The C++ namespace and the Python module are both
+called `quevedomp`, so `RobotModel` has a single entry listing **the C++ members first, then the
+Python bindings** — `const std::string & name() const noexcept` above `str name(self)`. That is
+deliberate: switching languages should not mean switching sites. The signatures tell you which is
+which at a glance, and where a class carries documentation on both sides you will see both
+paragraphs run together.
+
+The Python half is generated from the binding's type stub, so **signatures and type annotations are
+complete and authoritative** — including numpy array shapes and dtypes, which the C++ side cannot
+express. Prose is thinner: roughly two in five classes and one in six functions carry a docstring.
+Where a Python entity has none, **the C++ member above it is the semantic reference** — the
+bindings are a thin re-export and add no behaviour of their own.
+
+Three things behave differently from C++ and are worth knowing:
+
+- Arrays cross the boundary **zero-copy** where the annotation says so (`BatchResult.in_collision`
+  is a view over the C++ buffer, not a copy). It stays valid only as long as the owning object does.
+- The GIL is **released** around long-running calls such as `query_batch` and `plan`, so a Python
+  thread pool over one scene behaves the way you would hope — subject to the same one-`Workspace`
+  -per-thread rule as C++.
+- Factories that need more than `(params, robot, scene)` — the refiner and the PRM builder — are
+  separate functions rather than registry strings, exactly as in C++.
+
 ## Beyond this reference
 
 - **[README](https://github.com/leander2189/QuevedoMP#readme)** — building, presets, running the studio

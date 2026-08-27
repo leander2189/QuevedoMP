@@ -64,7 +64,7 @@ engineering questions stay open.
 |---|---|---|---|
 | **1** | [**Sales pitch**](docs/PITCH.md) — technical one-pager for engineers evaluating QuevedoMP against MoveIt, cuRobo or in-house code, with inline image/video suggestions and a 10-slide deck cut. | S | ✅ 2026-08-25 — **blocked on the license** before it leaves the building, see §3.1 |
 | **2** | **C++ API documentation** — Doxygen over the public headers, `docs` CMake target, output in the build tree. | S | ✅ 2026-08-25 — §3.2 |
-| **3** | **Python API documentation** — generated from the nanobind docstrings, same build step, one published surface with the C++ docs. | S | §3.3 |
+| **3** | **Python API documentation** — the nanobind stub documented by the same `docs` target, one site with the C++ reference. | S | ✅ 2026-08-25 — §3.3 |
 | **4** | **Worked examples** — a small set of C++ and Python programs a newcomer can read end to end: load a robot, add obstacles, plan, parameterize, inspect. Distinct from the existing `examples/` visualizers, which are development tools. | S–M | §3.4 |
 | **5** | [**R8 — adaptive-step RRT-Connect**](docs/QuevedoMP-R8-DESIGN.md) | S–M | Per-node extension step sized from the local width of free space, so a tree rooted in a narrow pocket can crawl out where a single global step cannot. **The fix for the headline limitation.** Spec written 2026-07-22. |
 | **6** | [**R10 — planning-throughput reorder**](docs/QuevedoMP-R10-DESIGN.md), phases A–B | M | Self-collision is 91% of every query. Integer self-ACM, then self-pair reachability pruning. Measured worth: making self-collision free is 3.51×, against 1.01× for the environment pass everyone assumed was the bottleneck. |
@@ -121,10 +121,26 @@ separators. Nine "unsupported xml/html tag" warnings remain and are deliberate: 
 those placeholders correctly, and escaping them makes the output worse. That was checked against
 generated HTML, not assumed.
 
-### 3.3 Python API documentation
+### 3.3 Python API documentation — delivered
 
-Generated from the nanobind signatures and docstrings in `bindings/python/src/bind_*.cpp`,
-published alongside the C++ docs. Decide one generator for both surfaces rather than two toolchains.
+One generator, not two: the nanobind type stub (`_native.pyi`) is fed to the same Doxygen run, so
+`--target docs` on a bindings-enabled preset produces 520 pages covering both languages. No Sphinx,
+no pdoc, no second toolchain, no new dependency.
+
+Two things worth knowing about how it turned out:
+
+- **The stub is staged as `quevedomp.pyi`**, because Doxygen names Python entities after the file
+  and nobody imports `quevedomp._native`. The pages read `quevedomp.RobotModel`, which is what a
+  user types.
+- **The C++ namespace and the Python module have the same name, so Doxygen merges them** — one page
+  per class, C++ members first, Python bindings after. Checked rather than assumed: the ordering is
+  stable and the signatures are unmistakable, so this reads as a feature and the mainpage explains
+  it. Where both sides document a class, the two paragraphs concatenate.
+
+**Follow-up worth doing (not blocking):** docstring coverage in the bindings is **43% of classes and
+16% of functions**. Signatures and types are complete, and the C++ member directly above carries the
+semantics, so the reference is usable — but adding docstrings to `bind_*.cpp` is a cheap, mechanical
+way to make the Python half stand on its own.
 
 ### 3.4 Worked examples
 

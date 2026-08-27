@@ -127,6 +127,10 @@ cmake --build build/dev-py --target docs
 #   -> build/dev-py/docs/api/html/index.html
 ```
 
+**C++ and Python in one site.** On a preset with the bindings on (`dev-py`, `release-py`) the
+nanobind type stub is documented alongside the headers, so each class page lists the C++ members
+first and the Python bindings after. A CPU-only preset gets the C++ half and says so.
+
 Output lands in the build tree, so generated documentation is never committed. The headers use
 plain `//` comments, which Doxygen ignores; [`docs/doxygen/comment-filter.py`](docs/doxygen/comment-filter.py)
 rewrites them on the way in and leaves the source untouched. Run it on any header to see exactly
